@@ -4,6 +4,7 @@ import type CalendarNotePlugin from './main';
 import type { CalendarSource, PluginSettings } from './types';
 import { isEventClickAction, isEventPropertiesDefault, isMainDateClickAction, isMiniDateClickAction, isMonthsMinimum, MONTHS_MINIMUM_MAX, resolveDailySettings, resolveWeeklySettings } from './settings';
 import { dailyNotePath, eventNotePath, weeklyNotePath, folderPath } from './paths';
+import { dailyFolderHint } from './daily-folder-hint';
 import { patchSubscription, subscriptionStatus } from './subscription-settings';
 import { PROBLEM_LABELS, PROBLEM_ORDER } from './note-problems';
 import { holidayOptions, isCalendarKind, isHolidayShade, type HolidayOptions } from './holidays';
@@ -63,6 +64,10 @@ export class CalendarNoteSettingTab extends PluginSettingTab {
       { type: 'group', heading: 'Note paths', items: [
         this.text('Event Note pattern', 'Moment date tokens, {title}, {calendar}, and {uid}. Start with {daily}/ to use the folder of the event’s Daily Note, such as {daily}/{title}.', 'eventPattern'),
         this.live('Event Note sample', current => eventNotePath(sample, 'Local', this.app, current)),
+        { name: 'Give each day its own folder', desc: 'All your Daily Notes share one folder, so {daily} files every Event Note and attachment there too. A folder per day keeps each day together.',
+          visible: () => !!dailyFolderHint(this.app, this.plugin.store.state.settings), render: setting => {
+            setting.addButton(button => button.setButtonText('Show how').onClick(() => { this.plugin.showDailyFolderHint(); }));
+          } },
         this.toggle('Move Event Notes when dates change', 'When an event moves to another date, move its Event Note to the folder the pattern gives for that date, such as the new Daily Note’s folder with {daily}. Notes you moved yourself stay put.', 'moveEventNotes'),
         this.dropdown('Event Note Properties', 'eventPropertiesDefault', [
           ['obsidian', 'Follow Obsidian'], ['collapsed', 'Collapsed'], ['expanded', 'Expanded'],
@@ -209,6 +214,7 @@ export class CalendarNoteSettingTab extends PluginSettingTab {
       else {
         for (const update of this.samples) update();
         this.refreshSubscriptionStatus();
+        this.refreshDomState();
       }
       return true;
     } catch (error) {

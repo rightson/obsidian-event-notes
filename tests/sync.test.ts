@@ -2,7 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { CalendarStore, type StoreIO, type RecoveryJournal } from "../src/store";
 import { freshState, type StoredState } from "../src/state";
-import { DEFAULT_SETTINGS } from "../src/settings";
+import { DEFAULT_SETTINGS as BASE_SETTINGS } from "../src/settings";
+
+// These tests assert paths under a flat folder; the default {daily}/{title} is covered in providers-paths.
+const DEFAULT_SETTINGS = { ...BASE_SETTINGS, eventPattern: "[Calendar Notes]/{title}" };
 import { SourceSyncService } from "../src/sync";
 import { SubscriptionService } from "../src/subscriptions";
 import { sourceEventId, type CalendarRange } from "../src/ical";
