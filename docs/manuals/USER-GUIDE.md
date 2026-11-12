@@ -60,6 +60,21 @@ Today's timeline keeps the current time in the middle of the sidebar and follows
 
 Subscriptions are optional. Add an HTTPS or `webcal://` (iCal) feed to display read-only calendar events: in the calendar, click **⋯** → **Add calendar subscription…** (or run **Add calendar subscription** from the command palette), paste the feed URL, and optionally give it a name, color, and type. The same **⋯** menu lists your subscriptions with a check mark to turn each on or off, and **Event Notes settings…** opens the plugin's settings for the remaining options, such as removing a feed or holiday backgrounds. Local events work without a subscription. Imported calendar data is cached for use in the calendar, and event changes can be reviewed in History. Removing the plugin or a feed does not delete Vault notes.
 
+### Refresh progress
+
+The refresh icon, the **Refresh calendars** command, and turning a subscription on or off (in the **⋯** menu or in settings) each show a notice that follows the work. For each calendar it names the step in progress:
+
+1. Check the subscription URL
+2. Download the feed
+3. Check the response
+4. Read the events
+5. Update Event Notes
+6. Save the result
+
+When everything succeeds the notice closes by itself. When a step fails it stays until you click it, and names the calendar, the step, and the reason, for example *Work: failed at step 2 of 6, “Download the feed”. The calendar server returned HTTP 404.* The reasons are fixed messages; the notice never shows a feed URL or feed content. Refreshes that run in the background (on the refresh interval, or when the window regains focus) stay silent and report failures in the calendar's banner and in settings.
+
+Turning a subscription on, or using the refresh icon, fetches the feed immediately. After a failure, background refreshes wait before trying again (from one minute up to an hour), so use either to retry at once.
+
 ## Holiday calendars
 
 Set a subscription's **Calendar type** to **Holidays** (for example a public-holiday feed such as Google's Taiwan holidays) to mark the days its events cover, not just list them. Each holiday calendar has its own options:

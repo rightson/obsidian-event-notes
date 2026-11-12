@@ -2,20 +2,21 @@ import { safeStoredSourceError, type SourceCache } from './history';
 import type { CalendarKind, CalendarSource, PluginSettings } from './types';
 
 /** Queue complete settings saves, then resolve each edit against the latest state. */
-export class SettingsUpdateQueue {
+export class SettingsUpdateQueue<Context = undefined> {
   private pending: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly current: () => PluginSettings,
-    private readonly persist: (settings: PluginSettings) => Promise<void>,
+    private readonly persist: (settings: PluginSettings, context?: Context) => Promise<void>,
   ) {}
 
-  update(change: (settings: PluginSettings) => void, validate?: (settings: PluginSettings) => void): Promise<void> {
+  /** `context` goes to `persist` with this edit, for example to report its progress. */
+  update(change: (settings: PluginSettings) => void, validate?: (settings: PluginSettings) => void, context?: Context): Promise<void> {
     const run = this.pending.then(async () => {
       const next = structuredClone(this.current());
       change(next);
       validate?.(next);
-      await this.persist(next);
+      await this.persist(next, context);
     });
     this.pending = run.then(() => undefined, () => undefined);
     return run;
