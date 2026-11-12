@@ -16,11 +16,13 @@ import { CalendarStore, RecoveryConflict } from './store';
 import { createObsidianStoreIO } from './vault-adapter';
 import { migrateLegacyData } from './migrate';
 import { EventNoteService, type ChooseNote } from './events';
-import { SubscriptionService } from './subscriptions';
+import { SubscriptionService, type RefreshOptions } from './subscriptions';
+import { RefreshNotice } from './refresh-notice';
+import { refreshSummary } from './refresh-progress';
 import { SourceSyncService } from './sync';
 import { SettingsUpdateQueue, newSubscription, patchSubscription } from './subscription-settings';
 import { historyForReview, type ChangeHistoryEntry } from './history';
-import type { CalendarEvent, Interval, PluginSettings } from './types';
+import type { CalendarEvent, CalendarSource, Interval, PluginSettings } from './types';
 import type { CalendarRange } from './ical';
 import { dateAt } from './date';
 import { isEventNoteFrontmatter } from './event-properties-state';
@@ -51,7 +53,7 @@ export default class CalendarNotePlugin extends Plugin {
   private restoreRenameFile?: () => void;
   private eventProperties?: EventPropertiesController;
   private settingTab?: CalendarNoteSettingTab;
-  private settingsUpdates!: SettingsUpdateQueue;
+  private settingsUpdates!: SettingsUpdateQueue<RefreshOptions>;
   private problemsModal?: EventNoteProblemsModal;
   projects!: ProjectIndex;
   projectWriter!: ProjectWriter;
@@ -82,7 +84,7 @@ export default class CalendarNotePlugin extends Plugin {
     const migrated = await this.migrateLegacyData();
     const state = normalizeState(await this.loadData(), DEFAULT_SETTINGS);
     this.store = new CalendarStore(createObsidianStoreIO(this.app, this), state);
-    this.settingsUpdates = new SettingsUpdateQueue(() => this.store.state.settings, settings => this.persistSettings(settings));
+    this.settingsUpdates = new SettingsUpdateQueue<RefreshOptions>(() => this.store.state.settings, (settings, refresh) => this.persistSettings(settings, refresh));
     try { await this.store.recover(); }
     catch {
       this.store.recoveryConflict ??= new RecoveryConflict(['transaction journal']);
@@ -297,13 +299,33 @@ export default class CalendarNotePlugin extends Plugin {
     this.range = unionRange(this.ranges.values()) ?? this.range;
   }
 
+  /**
+   * `force` is a refresh the user asked for: every subscription is fetched now
+   * and a notice follows each step. Background refreshes stay silent.
+   */
   async refresh(force = false): Promise<void> {
-    if (!this.ready || this.store.recoveryConflict) return;
-    await this.runAction(async () => {
+    if (!force) {
+      if (!this.ready || this.store.recoveryConflict) return;
+      await this.runAction(async () => {
+        await this.rescan();
+        if (this.range) await this.subscriptions.refresh(this.range);
+        this.updateEventsFromCache(); this.refreshViews();
+      });
+      return;
+    }
+    const progress = new RefreshNotice({ running: 'Refreshing calendars', failed: 'Calendar refresh failed' });
+    try {
+      if (!this.ready) throw new Error('Event Notes is still starting. Try again in a moment.');
+      if (this.store.recoveryConflict) { this.showRecovery(); throw new Error('Resolve pending recovery before refreshing calendars.'); }
+      progress.start('scan');
       await this.rescan();
-      if (this.range) await this.subscriptions.refresh(this.range, { force });
+      const range = this.range;
+      const outcomes = range ? await this.subscriptions.refresh(range, { force: true, onProgress: progress.onProgress }) : [];
       this.updateEventsFromCache(); this.refreshViews();
-    });
+      const waiting = !range && this.store.state.settings.sources.some(source => source.enabled && !!source.url.trim());
+      const summary = waiting ? 'Event Notes rescanned. Open the calendar to refresh subscriptions.' : refreshSummary(outcomes);
+      progress.finish(summary, summary);
+    } catch (error) { progress.fail(error); }
   }
 
   /**
@@ -502,8 +524,9 @@ export default class CalendarNotePlugin extends Plugin {
     return id;
   }
 
-  updateSettings(change: (settings: PluginSettings) => void, validate?: (settings: PluginSettings) => void): Promise<void> {
-    return this.settingsUpdates.update(change, validate);
+  /** `refresh` applies to the subscription refresh that follows the save. */
+  updateSettings(change: (settings: PluginSettings) => void, validate?: (settings: PluginSettings) => void, refresh?: RefreshOptions): Promise<void> {
+    return this.settingsUpdates.update(change, validate, refresh);
   }
 
   /** Settings changed outside the settings tab; redraw it so it doesn't show stale subscriptions. */
@@ -520,9 +543,38 @@ export default class CalendarNotePlugin extends Plugin {
     }, () => this.openSettings()).open();
   }
 
-  async setSubscriptionEnabled(id: string, enabled: boolean): Promise<void> {
-    try { await this.updateSettingsFromView(next => { patchSubscription(next, id, { enabled }); }); }
-    catch (error) { new Notice(error instanceof Error ? error.message : 'Could not update the subscription.'); }
+  /**
+   * Turn a subscription on or off, with a notice that follows each step.
+   * Turning one on fetches it at once, even when an earlier failure is still
+   * waiting to be retried. `patch` carries edits saved with the switch.
+   * Resolves to whether the settings were saved.
+   */
+  async setSubscriptionEnabled(id: string, enabled: boolean, patch: Partial<CalendarSource> = {}, redrawSettings = true): Promise<boolean> {
+    const name = patch.name ?? this.store.state.settings.sources.find(source => source.id === id)?.name ?? 'calendar';
+    const progress = new RefreshNotice(enabled
+      ? { running: `Turning on “${name}”`, failed: `Could not refresh “${name}”` }
+      : { running: `Turning off “${name}”`, failed: `Could not turn off “${name}”` }, id);
+    let saved = false;
+    try {
+      progress.start('settings');
+      await this.updateSettings(next => { patchSubscription(next, id, { ...patch, enabled }); },
+        next => { validatePluginSettings(this.app, next); },
+        enabled ? { forceSources: [id], onProgress: progress.onProgress } : undefined);
+      saved = true;
+      if (redrawSettings) this.settingTab?.update();
+      if (!enabled) { progress.finish(`“${name}” is turned off.`); return true; }
+      if (!this.store.state.settings.sources.find(source => source.id === id)?.enabled) {
+        throw new Error('Add a subscription URL before turning this calendar on.');
+      }
+      progress.finish(this.range ? `“${name}” is up to date.` : `“${name}” is turned on. Its events load when the calendar opens.`,
+        'It stays turned on and is tried again at the next refresh.');
+    } catch (error) {
+      // A failed refresh after a successful save still leaves the switch saved.
+      saved ||= this.store.state.settings.sources.find(source => source.id === id)?.enabled === enabled;
+      if (saved && redrawSettings) this.settingTab?.update();
+      progress.fail(error);
+    }
+    return saved;
   }
 
   /** Obsidian's settings window, on this plugin's tab. The API is undocumented, so it is feature-checked. */
@@ -540,7 +592,7 @@ export default class CalendarNotePlugin extends Plugin {
     return this.updateSettings(next => { Object.assign(next, settings); });
   }
 
-  private async persistSettings(settings: PluginSettings): Promise<void> {
+  private async persistSettings(settings: PluginSettings, refresh?: RefreshOptions): Promise<void> {
     const previousPropertiesDefault = this.store.state.settings.eventPropertiesDefault;
     await this.store.commit([], state => { state.settings = settings; });
     if (settings.eventPropertiesDefault !== previousPropertiesDefault) this.eventProperties?.settingsChanged();
@@ -554,7 +606,7 @@ export default class CalendarNotePlugin extends Plugin {
     });
     if (this.range) await this.subscriptions.setRange(this.range);
     if (this.ready) this.subscriptions.start();
-    if (this.ready && this.range) await this.subscriptions.refresh(this.range);
+    if (this.ready && this.range) await this.subscriptions.refresh(this.range, refresh);
     this.scheduleScan();
   }
 

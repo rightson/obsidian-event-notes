@@ -272,7 +272,14 @@ export class CalendarNoteSettingTab extends PluginSettingTab {
     // A holiday choice shows at once; this holds it until the save reaches the store.
     let draft: Partial<CalendarSource> = {};
     const update = async (patch: Partial<CalendarSource>) => {
-      const saved = await this.save(next => { patchSubscription(next, id, patch); });
+      // The on/off switch reports its own progress and failures.
+      const saved = patch.enabled === undefined
+        ? await this.save(next => { patchSubscription(next, id, patch); })
+        : await this.plugin.setSubscriptionEnabled(id, patch.enabled, patch, false);
+      if (patch.enabled !== undefined) {
+        for (const sample of this.samples) sample();
+        this.refreshSubscriptionStatus();
+      }
       if (saved && patch.name !== undefined) this.sourceGroups.get(id)?.setHeading(patch.name);
       const latest = current();
       if (latest && enabledToggle && enabledToggle.getValue() !== latest.enabled) {
