@@ -18,9 +18,11 @@ import { migrateLegacyData } from './migrate';
 import { EventNoteService, type ChooseNote } from './events';
 import { SubscriptionService } from './subscriptions';
 import { SourceSyncService } from './sync';
+import { syncProgressNotice } from './sync-progress-notice';
+import type { SyncProgress } from './sync-progress';
 import { SettingsUpdateQueue, newSubscription, patchSubscription } from './subscription-settings';
 import { historyForReview, type ChangeHistoryEntry } from './history';
-import type { CalendarEvent, Interval, PluginSettings } from './types';
+import type { CalendarEvent, CalendarSource, Interval, PluginSettings } from './types';
 import type { CalendarRange } from './ical';
 import { dateAt } from './date';
 import { isEventNoteFrontmatter } from './event-properties-state';
@@ -299,11 +301,23 @@ export default class CalendarNotePlugin extends Plugin {
 
   async refresh(force = false): Promise<void> {
     if (!this.ready || this.store.recoveryConflict) return;
+    // Only a manual refresh (button, command, problems list) shows progress; focus, online, and timer refreshes stay silent.
+    const progress = force ? this.syncProgress(this.store.state.settings.sources.filter(source => source.enabled && !!source.url.trim())) : undefined;
     await this.runAction(async () => {
-      await this.rescan();
-      if (this.range) await this.subscriptions.refresh(this.range, { force });
-      this.updateEventsFromCache(); this.refreshViews();
+      try {
+        await this.rescan();
+        if (this.range) await this.subscriptions.refresh(this.range, { force, progress });
+        this.updateEventsFromCache(); this.refreshViews();
+      } catch (error) {
+        progress?.abort(error instanceof Error ? error.message : 'The refresh failed.');
+        throw error;
+      }
     });
+    progress?.finish();
+  }
+
+  private syncProgress(sources: CalendarSource[]): SyncProgress | undefined {
+    return sources.length ? syncProgressNotice(sources) : undefined;
   }
 
   /**
@@ -542,6 +556,22 @@ export default class CalendarNotePlugin extends Plugin {
 
   private async persistSettings(settings: PluginSettings): Promise<void> {
     const previousPropertiesDefault = this.store.state.settings.eventPropertiesDefault;
+    // Turning a subscription on or off is user-initiated, so it shows progress; other settings saves stay silent.
+    const before = new Map(this.store.state.settings.sources.map(source => [source.id, source.enabled]));
+    const toggled = this.ready ? settings.sources.filter(source => before.has(source.id) && before.get(source.id) !== source.enabled
+      && (!source.enabled || (!!this.range && !!source.url.trim()))) : [];
+    const progress = this.syncProgress(toggled);
+    try {
+      await this.persistSettingsNow(settings, previousPropertiesDefault, progress, toggled.filter(source => !source.enabled), toggled.filter(source => source.enabled));
+    } catch (error) {
+      progress?.abort(error instanceof Error ? error.message : 'Could not update the subscription.');
+      throw error;
+    }
+    progress?.finish();
+  }
+
+  private async persistSettingsNow(settings: PluginSettings, previousPropertiesDefault: PluginSettings['eventPropertiesDefault'], progress: SyncProgress | undefined, turnedOff: CalendarSource[], turnedOn: CalendarSource[]): Promise<void> {
+    for (const source of turnedOff) progress?.step(source, 'hide');
     await this.store.commit([], state => { state.settings = settings; });
     if (settings.eventPropertiesDefault !== previousPropertiesDefault) this.eventProperties?.settingsChanged();
     for (const view of this.getViews()) view.settingsChanged();
@@ -554,7 +584,8 @@ export default class CalendarNotePlugin extends Plugin {
     });
     if (this.range) await this.subscriptions.setRange(this.range);
     if (this.ready) this.subscriptions.start();
-    if (this.ready && this.range) await this.subscriptions.refresh(this.range);
+    if (this.ready && this.range) // A subscription the user just turned on fetches now, even inside the sync interval or a retry back-off.
+    if (this.ready && this.range) await this.subscriptions.refresh(this.range, progress ? { progress, forceIds: new Set(turnedOn.map(source => source.id)) } : undefined);
     this.scheduleScan();
   }
 

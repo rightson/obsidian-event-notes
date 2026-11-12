@@ -155,3 +155,15 @@ test('stored reasons are allowlisted before settings or banner display', () => {
   assert.doesNotMatch(subscriptionStatus(source, cache, 0), /example|token|secret/);
   assert.doesNotMatch(subscriptionFailureMessage({ ...DEFAULT_SETTINGS, sources: [source] }, { feed: cache })!, /example|token|secret/);
 });
+
+test('forceIds fetches a just-enabled source inside the sync interval and reports its steps', async () => {
+  let requests = 0;
+  const { service } = harness(async () => { requests += 1; return { status: 200, text: valid }; });
+  await service.refresh(range, { force: true });
+  await service.refresh(range);
+  assert.equal(requests, 1, 'a background refresh inside the interval does not fetch');
+  const steps: string[] = [];
+  await service.refresh(range, { forceIds: new Set(['feed']), progress: { step: (_source, step) => { steps.push(step); }, fail: () => { steps.push('fail'); } } });
+  assert.equal(requests, 2);
+  assert.deepEqual(steps, ['fetch', 'parse', 'update', 'save']);
+});

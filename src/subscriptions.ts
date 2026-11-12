@@ -5,6 +5,7 @@ import type { CalendarSource, CalendarEvent } from "./types";
 import type { CalendarStore } from "./store";
 import type { SourceSyncService } from "./sync";
 import type { StoredState } from "./state";
+import type { SyncReporter } from "./sync-progress";
 
 export interface RequestResponse {
   status: number;
@@ -172,20 +173,20 @@ export class SubscriptionService {
     this.timer = undefined;
   }
 
-  refresh(range: CalendarRange, options: { force?: boolean } = {}): Promise<void> {
+  refresh(range: CalendarRange, options: { force?: boolean; forceIds?: ReadonlySet<string>; progress?: SyncReporter } = {}): Promise<void> {
     const run = this.refreshQueue.then(async () => {
       if (this.disposed) return;
       this.range = range;
       for (const source of this.store.state.settings.sources) {
         if (this.disposed) return;
-        await this.refreshSource(source, range, options.force ?? false);
+        await this.refreshSource(source, range, (options.force ?? false) || (options.forceIds?.has(source.id) ?? false), options.progress);
       }
     });
     this.refreshQueue = run.then(() => undefined, () => undefined);
     return run;
   }
 
-  private async refreshSource(source: CalendarSource, range: CalendarRange, force: boolean): Promise<void> {
+  private async refreshSource(source: CalendarSource, range: CalendarRange, force: boolean, progress?: SyncReporter): Promise<void> {
     const guard = this.guard(source);
     if (!guard.configuredUrl || !this.isCurrent(guard)) return;
     const url = guard.normalizedUrl;
@@ -193,6 +194,8 @@ export class SubscriptionService {
       const prior = this.store.state.sourceCaches[source.id];
       if (!force && prior?.retryFingerprint === undefined && prior?.retryAfter
         && Date.parse(prior.retryAfter) > Date.now()) return;
+      progress?.step(source, "validate");
+      progress?.fail(source, safeSourceError("url"));
       await this.fail(guard, "url");
       return;
     }
@@ -215,17 +218,21 @@ export class SubscriptionService {
       if (sameEndpoint && cache.etag) headers["If-None-Match"] = cache.etag;
       if (sameEndpoint && cache.lastModified) headers["If-Modified-Since"] = cache.lastModified;
       stage = "request";
+      progress?.step(source, "fetch");
       const response = await this.request(url, headers);
       if (!this.isCurrent(guard)) return;
       if (response.status === 304) {
         if (!sameEndpoint || !cache.raw) throw new SourceFailure("cache-missing");
         stage = "parse";
+        progress?.step(source, "parse");
         const events = this.parser.parse(cache.raw, source.id, range, this.store.state.settings.timeZone, this.trackedIds(source.id));
         if (!this.isCurrent(guard)) return;
         stage = "sync";
+        progress?.step(source, "update");
         await this.sync.accept(source, events, range, state => this.isCurrent(guard, state));
         if (!this.isCurrent(guard)) return;
         stage = "cache";
+        progress?.step(source, "save");
         await this.store.commit([], state => {
           if (!this.isCurrent(guard, state)) return;
           const target = state.sourceCaches[source.id] ??= emptySourceCache();
@@ -243,12 +250,15 @@ export class SubscriptionService {
       const bodyFailure = responseBodyFailure(text, response.headers);
       if (bodyFailure) throw bodyFailure;
       stage = "parse";
+      progress?.step(source, "parse");
       const events = this.parser.parse(text, source.id, range, this.store.state.settings.timeZone, this.trackedIds(source.id));
       if (!this.isCurrent(guard)) return;
       stage = "sync";
+      progress?.step(source, "update");
       await this.sync.accept(source, events, range, state => this.isCurrent(guard, state));
       if (!this.isCurrent(guard)) return;
       stage = "cache";
+      progress?.step(source, "save");
       await this.store.commit([], state => {
         if (!this.isCurrent(guard, state)) return;
         const target = state.sourceCaches[source.id] ??= emptySourceCache();
@@ -265,6 +275,7 @@ export class SubscriptionService {
       });
     } catch (error) {
       const failure = failureFor(error, stage);
+      progress?.fail(source, safeSourceError(failure.kind, failure.detail));
       await this.fail(guard, failure.kind, at, fingerprint, failure.detail);
     }
   }
