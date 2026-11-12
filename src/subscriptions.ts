@@ -5,6 +5,7 @@ import type { CalendarSource, CalendarEvent } from "./types";
 import type { CalendarStore } from "./store";
 import type { SourceSyncService } from "./sync";
 import type { StoredState } from "./state";
+import type { CalendarPosition, CalendarStep, RefreshEvent, SourceRefreshOutcome } from "./refresh-progress";
 
 export interface RequestResponse {
   status: number;
@@ -15,7 +16,15 @@ export interface RequestResponse {
 export type RequestAdapter = (url: string, headers: Record<string, string>) => Promise<RequestResponse>;
 export type SourceStatus = Pick<SourceCache, "lastAttempt" | "lastSuccess" | "error" | "retryAfter" | "failures">;
 
-type FailureStage = "request" | "parse" | "sync" | "cache";
+export interface RefreshOptions {
+  /** Refresh every subscription now, ignoring its refresh interval and retry delay. */
+  force?: boolean;
+  /** Subscriptions to refresh now even when the others wait for their turn. */
+  forceSources?: readonly string[];
+  onProgress?: (event: RefreshEvent) => void;
+}
+
+type FailureStage = CalendarStep;
 
 class SourceFailure extends Error {
   constructor(public readonly kind: SourceErrorKind, public readonly detail?: ICalErrorCode | number) {
@@ -27,7 +36,7 @@ function failureFor(error: unknown, stage: FailureStage): SourceFailure {
   if (error instanceof SourceFailure) return error;
   if (stage === "parse") return new SourceFailure("parse",
     error instanceof ICalError ? error.code : "invalid-syntax");
-  return new SourceFailure(stage === "request" ? "fetch" : stage);
+  return new SourceFailure(stage === "request" ? "fetch" : stage === "sync" ? "sync" : "cache");
 }
 
 function responseBodyFailure(text: string, headers: Record<string, string> | undefined): SourceFailure | undefined {
@@ -172,90 +181,87 @@ export class SubscriptionService {
     this.timer = undefined;
   }
 
-  refresh(range: CalendarRange, options: { force?: boolean } = {}): Promise<void> {
+  /** Resolves with one outcome per enabled subscription, in settings order. */
+  refresh(range: CalendarRange, options: RefreshOptions = {}): Promise<SourceRefreshOutcome[]> {
     const run = this.refreshQueue.then(async () => {
-      if (this.disposed) return;
+      const outcomes: SourceRefreshOutcome[] = [];
+      if (this.disposed) return outcomes;
       this.range = range;
-      for (const source of this.store.state.settings.sources) {
-        if (this.disposed) return;
-        await this.refreshSource(source, range, options.force ?? false);
+      const sources = this.store.state.settings.sources.filter(source => source.enabled && !!source.url.trim());
+      for (const [index, source] of sources.entries()) {
+        if (this.disposed) return outcomes;
+        const calendar: CalendarPosition = { sourceId: source.id, name: source.name, index, total: sources.length };
+        const force = !!options.force || !!options.forceSources?.includes(source.id);
+        const result = await this.refreshSource(source, range, force,
+          step => { options.onProgress?.({ type: "step", step, calendar }); });
+        const outcome = { sourceId: source.id, name: source.name, ...result };
+        outcomes.push(outcome);
+        options.onProgress?.({ type: "outcome", outcome });
       }
+      return outcomes;
     });
     this.refreshQueue = run.then(() => undefined, () => undefined);
     return run;
   }
 
-  private async refreshSource(source: CalendarSource, range: CalendarRange, force: boolean): Promise<void> {
+  private async refreshSource(source: CalendarSource, range: CalendarRange, force: boolean,
+    report: (step: CalendarStep) => void): Promise<Pick<SourceRefreshOutcome, "status" | "step" | "error">> {
     const guard = this.guard(source);
-    if (!guard.configuredUrl || !this.isCurrent(guard)) return;
+    if (!guard.configuredUrl || !this.isCurrent(guard)) return { status: "cancelled" };
+    let stage: FailureStage = "prepare";
+    const enter = (next: FailureStage) => { stage = next; report(next); };
+    enter("prepare");
     const url = guard.normalizedUrl;
     if (!url) {
       const prior = this.store.state.sourceCaches[source.id];
       if (!force && prior?.retryFingerprint === undefined && prior?.retryAfter
-        && Date.parse(prior.retryAfter) > Date.now()) return;
+        && Date.parse(prior.retryAfter) > Date.now()) return { status: "skipped" };
       await this.fail(guard, "url");
-      return;
+      return { status: "failed", step: "prepare", error: safeSourceError("url") };
     }
     const cache = this.store.state.sourceCaches[source.id] ?? emptySourceCache();
     const at = new Date().toISOString();
     let fingerprint: string | undefined;
-    let stage: FailureStage = "cache";
     try {
       fingerprint = await urlFingerprint(url);
-      if (!this.isCurrent(guard)) return;
+      if (!this.isCurrent(guard)) return { status: "cancelled" };
       const sameEndpoint = cache.urlFingerprint === fingerprint;
       if (!force) {
-        if (cache.retryFingerprint === fingerprint && cache.retryAfter && Date.parse(cache.retryAfter) > Date.now()) return;
+        if (cache.retryFingerprint === fingerprint && cache.retryAfter && Date.parse(cache.retryAfter) > Date.now()) return { status: "skipped" };
       }
       if (!force && sameEndpoint) {
         const interval = Math.max(1, this.store.state.settings.syncIntervalMinutes || 15) * 60_000;
-        if (cache.lastSuccess && Date.parse(cache.lastSuccess) + interval > Date.now()) return;
+        if (cache.lastSuccess && Date.parse(cache.lastSuccess) + interval > Date.now()) return { status: "skipped" };
       }
       const headers: Record<string, string> = {};
       if (sameEndpoint && cache.etag) headers["If-None-Match"] = cache.etag;
       if (sameEndpoint && cache.lastModified) headers["If-Modified-Since"] = cache.lastModified;
-      stage = "request";
+      enter("request");
       const response = await this.request(url, headers);
-      if (!this.isCurrent(guard)) return;
-      if (response.status === 304) {
-        if (!sameEndpoint || !cache.raw) throw new SourceFailure("cache-missing");
-        stage = "parse";
-        const events = this.parser.parse(cache.raw, source.id, range, this.store.state.settings.timeZone, this.trackedIds(source.id));
-        if (!this.isCurrent(guard)) return;
-        stage = "sync";
-        await this.sync.accept(source, events, range, state => this.isCurrent(guard, state));
-        if (!this.isCurrent(guard)) return;
-        stage = "cache";
-        await this.store.commit([], state => {
-          if (!this.isCurrent(guard, state)) return;
-          const target = state.sourceCaches[source.id] ??= emptySourceCache();
-          target.lastAttempt = at;
-          target.lastSuccess = at;
-          target.failures = 0;
-          target.retryAfter = undefined;
-          target.retryFingerprint = undefined;
-          target.error = undefined;
-        });
-        return;
-      }
-      if (response.status !== 200) throw new SourceFailure("http", response.status);
-      const text = response.text ?? "";
-      const bodyFailure = responseBodyFailure(text, response.headers);
+      if (!this.isCurrent(guard)) return { status: "cancelled" };
+      if (response.status !== 200 && response.status !== 304) throw new SourceFailure("http", response.status);
+      enter("response");
+      const unchanged = response.status === 304;
+      if (unchanged && (!sameEndpoint || !cache.raw)) throw new SourceFailure("cache-missing");
+      const text = unchanged ? cache.raw ?? "" : response.text ?? "";
+      const bodyFailure = unchanged ? undefined : responseBodyFailure(text, response.headers);
       if (bodyFailure) throw bodyFailure;
-      stage = "parse";
+      enter("parse");
       const events = this.parser.parse(text, source.id, range, this.store.state.settings.timeZone, this.trackedIds(source.id));
-      if (!this.isCurrent(guard)) return;
-      stage = "sync";
+      if (!this.isCurrent(guard)) return { status: "cancelled" };
+      enter("sync");
       await this.sync.accept(source, events, range, state => this.isCurrent(guard, state));
-      if (!this.isCurrent(guard)) return;
-      stage = "cache";
+      if (!this.isCurrent(guard)) return { status: "cancelled" };
+      enter("cache");
       await this.store.commit([], state => {
         if (!this.isCurrent(guard, state)) return;
         const target = state.sourceCaches[source.id] ??= emptySourceCache();
-        target.raw = text;
-        target.urlFingerprint = fingerprint;
-        target.etag = header(response.headers, "etag");
-        target.lastModified = header(response.headers, "last-modified");
+        if (!unchanged) {
+          target.raw = text;
+          target.urlFingerprint = fingerprint;
+          target.etag = header(response.headers, "etag");
+          target.lastModified = header(response.headers, "last-modified");
+        }
         target.lastAttempt = at;
         target.lastSuccess = at;
         target.failures = 0;
@@ -263,9 +269,11 @@ export class SubscriptionService {
         target.retryFingerprint = undefined;
         target.error = undefined;
       });
+      return { status: unchanged ? "unchanged" : "updated" };
     } catch (error) {
       const failure = failureFor(error, stage);
       await this.fail(guard, failure.kind, at, fingerprint, failure.detail);
+      return { status: "failed", step: stage, error: safeSourceError(failure.kind, failure.detail) };
     }
   }
 
