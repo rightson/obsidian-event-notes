@@ -92,6 +92,11 @@ export function formatNotePath(
 const DAILY_PLACEMENT = '{daily} must start the pattern and be followed by / and the rest of the path.';
 const DAILY_PREFIX = /^\{daily\}\/(.*)$/is;
 
+/** Whether the Event Note pattern files notes in the folder of their Daily Note. */
+export function usesDailyFolder(pattern: unknown): boolean {
+  return typeof pattern === 'string' && DAILY_PREFIX.test(pattern.trim());
+}
+
 /** The folder holding the Daily Note for this date; empty at the Vault root. */
 export function dailyNoteFolder(date: string | Date, app: App, settings: PluginSettings): string {
   const path = dailyNotePath(date, app, settings);

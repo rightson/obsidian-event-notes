@@ -4,8 +4,9 @@ import { normalizeSidebarWidth, SIDEBAR_DEFAULT_WIDTH } from './sidebar-layout';
 
 export const DEFAULT_SETTINGS: PluginSettings = {
   sources: [],
-  eventPattern: '[Calendar Notes]/{title}',
+  eventPattern: '{daily}/{title}',
   moveEventNotes: true,
+  dailyFolderHintDismissed: false,
   eventPropertiesDefault: 'collapsed',
   eventClickAction: 'dialog',
   miniDateClickAction: 'navigate',
@@ -54,6 +55,7 @@ export function normalizePluginSettings(raw: unknown, fallback: PluginSettings =
     mainCollapsed: mainCollapsed && !sidebarCollapsed,
     workdaysOnly: typeof input.workdaysOnly === 'boolean' ? input.workdaysOnly : fallback.workdaysOnly,
     moveEventNotes: typeof input.moveEventNotes === 'boolean' ? input.moveEventNotes : fallback.moveEventNotes,
+    dailyFolderHintDismissed: typeof input.dailyFolderHintDismissed === 'boolean' ? input.dailyFolderHintDismissed : fallback.dailyFolderHintDismissed,
     monthsOnStartup: typeof input.monthsOnStartup === 'boolean' ? input.monthsOnStartup : fallback.monthsOnStartup,
     monthsMinimum: isMonthsMinimum(input.monthsMinimum) ? input.monthsMinimum : fallback.monthsMinimum,
     agendaKeepTime: typeof input.agendaKeepTime === 'boolean' ? input.agendaKeepTime : fallback.agendaKeepTime,

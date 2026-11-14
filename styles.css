@@ -493,3 +493,22 @@ body:not(.is-phone) .modal.cn-event-modal { width: min(1100px, 80vw); min-width:
 .cp-diff-line.is-added { background: color-mix(in srgb, var(--color-green) 15%, transparent); }
 .cp-diff-gap { color: var(--text-faint); }
 .cp-gantt-never { display: flex; align-items: center; gap: 4px; color: var(--text-muted); }
+/* Refresh progress notice: a title, a bar, the current step, and the failed steps. */
+.cn-refresh-notice { display: flex; flex-direction: column; gap: 6px; min-width: 220px; }
+.cn-refresh-title { font-weight: var(--font-semibold, 600); }
+.cn-refresh-bar { height: 4px; border-radius: 2px; background: color-mix(in srgb, currentColor 22%, transparent); overflow: hidden; }
+.cn-refresh-bar[hidden], .cn-refresh-detail[hidden], .cn-refresh-failures[hidden] { display: none; }
+.cn-refresh-bar-fill { width: var(--cn-refresh-progress, 0%); height: 100%; border-radius: 2px; background: var(--interactive-accent); transition: width .2s ease; }
+.cn-refresh-notice.is-done .cn-refresh-bar-fill { background: var(--color-green); }
+.cn-refresh-detail { font-size: var(--font-ui-small); opacity: .8; overflow-wrap: anywhere; }
+.cn-refresh-failures { margin: 0; padding-left: 16px; font-size: var(--font-ui-small); overflow-wrap: anywhere; }
+.cn-refresh-notice.is-failed .cn-refresh-title { color: var(--color-red); }
+@media (prefers-reduced-motion: reduce) { .cn-refresh-bar-fill { transition: none; } }
+
+/* Per-day folder suggestion */
+.cn-daily-folder-paths { width: 100%; border-collapse: collapse; margin-bottom: var(--size-4-3); }
+.cn-daily-folder-paths th, .cn-daily-folder-paths td { padding: var(--size-4-1) var(--size-4-2); text-align: start; vertical-align: top; border-bottom: 1px solid var(--background-modifier-border); }
+.cn-daily-folder-paths tbody th { font-weight: var(--font-semibold); white-space: nowrap; }
+.cn-daily-folder-paths code { word-break: break-all; }
+.cn-daily-folder-warning { padding: var(--size-4-2) var(--size-4-3); border-inline-start: 3px solid var(--color-orange); background: var(--background-secondary); border-radius: var(--radius-s); }
+.cn-daily-folder-warning p { margin: 0; }
