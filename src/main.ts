@@ -10,7 +10,9 @@ import { ChangeHistoryModal, EventModal } from './modals';
 import { EventNoteProblemsModal } from './problems-modal';
 import { CalendarNoteSettingTab, validatePluginSettings } from './settings-tab';
 import { AddSubscriptionModal } from './subscription-modal';
-import { DEFAULT_SETTINGS } from './settings';
+import { DEFAULT_SETTINGS, resolveDailySettings } from './settings';
+import { dailyFolderHint, existingDailyNotes } from './daily-folder-hint';
+import { DailyFolderHintModal } from './daily-folder-modal';
 import { normalizeState } from './state';
 import { CalendarStore, RecoveryConflict } from './store';
 import { createObsidianStoreIO } from './vault-adapter';
@@ -198,6 +200,7 @@ export default class CalendarNotePlugin extends Plugin {
       if (this.store.state.settings.monthsOnStartup) void ensureSidebarView(this.app.workspace, MONTHS_VIEW_TYPE);
       if (this.range) void this.refresh(false);
       if (this.store.recoveryConflict) this.showRecovery();
+      if (!this.store.recoveryConflict && !this.store.state.settings.dailyFolderHintDismissed) this.showDailyFolderHint();
       if (migrated) new Notice(`Event Notes imported your ${migrated} settings. Disable and remove ${migrated} so the two plugins don't edit the same notes.`, 0);
     });
   }
@@ -577,15 +580,36 @@ export default class CalendarNotePlugin extends Plugin {
     return saved;
   }
 
-  /** Obsidian's settings window, on this plugin's tab. The API is undocumented, so it is feature-checked. */
+  /** Obsidian's settings window, on this plugin's tab. */
   openSettings(): void {
+    if (!this.openSettingsTab(this.manifest.id)) new Notice('Open Settings → Event Notes to manage subscriptions.');
+  }
+
+  /** Obsidian's settings window on any tab. The API is undocumented, so it is feature-checked. */
+  openSettingsTab(id: string): boolean {
     const setting = (this.app as unknown as { setting?: { open?: () => void; openTabById?: (id: string) => unknown } }).setting;
-    if (typeof setting?.open !== 'function' || typeof setting.openTabById !== 'function') {
-      new Notice('Open Settings → Event Notes to manage subscriptions.');
-      return;
-    }
+    if (typeof setting?.open !== 'function' || typeof setting.openTabById !== 'function') return false;
     setting.open();
-    setting.openTabById(this.manifest.id);
+    setting.openTabById(id);
+    return true;
+  }
+
+  /**
+   * Suggests a folder per day when `{daily}` files Event Notes beside Daily Notes that
+   * all share one folder. Returns false when there is nothing to suggest.
+   */
+  showDailyFolderHint(): boolean {
+    const settings = this.store.state.settings;
+    const hint = dailyFolderHint(this.app, settings);
+    if (!hint) return false;
+    const existing = existingDailyNotes(this.app.vault.getMarkdownFiles().map(file => file.path), hint, settings.locale).length;
+    const ownProvider = resolveDailySettings(this.app, settings).provider === 'calendar-note';
+    new DailyFolderHintModal(this.app, hint, existing, {
+      applyFormat: ownProvider ? format => this.updateSettingsFromView(next => { next.dailyFormat = format; }) : undefined,
+      openSettingsTab: id => this.openSettingsTab(id),
+      dismiss: () => this.updateSettingsFromView(next => { next.dailyFolderHintDismissed = true; }),
+    }).open();
+    return true;
   }
 
   saveSettings(settings: PluginSettings): Promise<void> {

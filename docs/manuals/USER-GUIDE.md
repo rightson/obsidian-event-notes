@@ -86,9 +86,9 @@ When several holiday calendars share a date, the first one in settings sets its 
 
 ## Where Event Notes go
 
-The **Event Note pattern** setting decides where new Event Notes are created. It accepts Moment date tokens and `{title}`, `{calendar}`, and `{uid}`; the default is `[Calendar Notes]/{title}`.
+The **Event Note pattern** setting decides where new Event Notes are created. It accepts Moment date tokens and `{title}`, `{calendar}`, and `{uid}`; the default is `{daily}/{title}`, which keeps each Event Note beside its Daily Note. Settings saved by an earlier version keep the pattern they had, such as `[Calendar Notes]/{title}`.
 
-To keep Event Notes beside their Daily Notes, start the pattern with `{daily}`. It stands for the folder of the event's Daily Note. For example, with Daily Notes in `Journal` using the format `YYYY/MM/YYYY-MM-DD`:
+A pattern that starts with `{daily}` uses the folder of the event's Daily Note. For example, with Daily Notes in `Journal` using the format `YYYY/MM/YYYY-MM-DD`:
 
 | Pattern | Event on 2026-10-23 |
 |---|---|
@@ -97,7 +97,22 @@ To keep Event Notes beside their Daily Notes, start the pattern with `{daily}`. 
 
 `{daily}` must be the first part of the pattern and be followed by `/`.
 
-When an event moves to another date, its Event Note moves with it to the folder the pattern gives for the new date. This applies whether you drag the event, edit it in the calendar, change `start` in the note, or a subscription changes it. Obsidian updates links to the note as for any rename (when **Automatically update internal links** is on), and the Daily Note entry moves to the new Daily Note. A note you renamed keeps its name; if the target name is taken, a number is added, as in `Standup (2).md`. Notes you moved out of the pattern's folder yourself, or chose with **Change…**, stay where they are. A pattern without date folders, such as the default, never moves notes. Changing the pattern or Daily Notes settings affects new notes only.
+### A folder for each day
+
+With the plain Daily Note format `YYYY-MM-DD`, every Daily Note shares one folder, so `{daily}/{title}` puts every Event Note in that folder too. Adding a folder per day to the Daily Note format keeps each day together:
+
+| Daily Note format | Daily Note | Event Note |
+|---|---|---|
+| `YYYY-MM-DD` | `Daily Notes/2026-10-23.md` | `Daily Notes/<title>.md` |
+| `YYYY-MM-DD/YYYY-MM-DD` | `Daily Notes/2026-10-23/2026-10-23.md` | `Daily Notes/2026-10-23/<title>.md` |
+
+To keep attachments in the day's folder as well, set **Settings → Files and links → Default location for new attachments** to **Same folder as current file** or **In subfolder under current folder**. Images and files added to a Daily Note or Event Note then go in that day's folder. This setting applies to the whole Vault.
+
+When the pattern starts with `{daily}` and all Daily Notes share one folder, Event Notes suggests this at startup, until the folders change or you choose **Don't show again**. The suggestion shows the paths before and after. When Event Notes provides your Daily Notes, a button changes its **Daily fallback format**. When the core Daily notes plugin provides them, change **Date format** in its settings; Event Notes reads it from there. **Give each day its own folder** under **Note paths** in settings opens it again.
+
+Changing the format does not move existing Daily Notes. On its next scan, Event Notes adds each linked event's entry to the Daily Note at the new path, creating that note if it is missing, and removes the entry from the old one. Move existing Daily Notes into their day folders before changing the format, so each day stays in one note. Existing Event Notes stay where they are.
+
+When an event moves to another date, its Event Note moves with it to the folder the pattern gives for the new date. This applies whether you drag the event, edit it in the calendar, change `start` in the note, or a subscription changes it. Obsidian updates links to the note as for any rename (when **Automatically update internal links** is on), and the Daily Note entry moves to the new Daily Note. A note you renamed keeps its name; if the target name is taken, a number is added, as in `Standup (2).md`. Notes you moved out of the pattern's folder yourself, or chose with **Change…**, stay where they are. A pattern whose folder is the same for every date, such as `[Calendar Notes]/{title}` or `{daily}/{title}` with all Daily Notes in one folder, never moves notes. Changing the pattern or Daily Notes settings affects new notes only.
 
 To keep Event Notes where they were created, turn off **Move Event Notes when dates change** in settings (it is on by default). The Daily Note entry still moves to the new date and links to the note where it is. Turning the setting off also cancels any move that has not happened yet.
 

@@ -38,7 +38,8 @@ class FakeVault implements StoreIO {
 }
 
 function setup(io = new FakeVault()) {
-  const settings = { ...DEFAULT_SETTINGS };
+  // These tests assert paths under a flat folder; the default {daily}/{title} is covered in providers-paths.
+  const settings = { ...DEFAULT_SETTINGS, eventPattern: '[Calendar Notes]/{title}' };
   const store = new CalendarStore(io, freshState(settings));
   const opened: string[] = [];
   const trashed: string[] = [];
