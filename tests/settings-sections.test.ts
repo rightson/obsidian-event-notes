@@ -4,7 +4,7 @@ import test from 'node:test';
 import { DEFAULT_SETTINGS } from '../src/settings';
 import { emptySourceCache } from '../src/history';
 import {
-  agendaSummary, clickingSummary, diagnosticsSummary, displaySummary, ganttSummary, monthsSummary, notePathsSummary,
+  agendaSummary, clickingSummary, diagnosticsSummary, displaySummary, ganttSummary, monthsSummary, notePathsSummary, ribbonSummary,
   readOpenSections, revealOnLookup, sectionHeading, sourceSectionKey, sourceSummary, startsOpen, subscriptionsSummary, withSectionOpen,
 } from '../src/settings-sections';
 import type { CalendarSource, PluginSettings } from '../src/types';
@@ -52,6 +52,13 @@ test('Clicking shows what an event and an empty slot do', () => {
 test('Month calendar shows the minimum months and whether it opens at startup', () => {
   assert.equal(monthsSummary(settings()).text, 'At least 3 months · added at startup');
   assert.equal(monthsSummary(settings({ monthsMinimum: 1, monthsOnStartup: false })).text, 'At least 1 month · not added at startup');
+});
+
+test('Ribbon icons lists the icons that are shown', () => {
+  assert.equal(ribbonSummary(settings()).text, 'Calendar, events sidebar, month calendar');
+  assert.equal(ribbonSummary(settings({ ribbonMonths: false })).text, 'Calendar, events sidebar');
+  assert.equal(ribbonSummary(settings({ ribbonCalendar: false })).text, 'Events sidebar, month calendar');
+  assert.equal(ribbonSummary(settings({ ribbonCalendar: false, ribbonAgenda: false, ribbonMonths: false })).text, 'None');
 });
 
 test('Events sidebar and Gantt show their current choices', () => {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { Workspace, WorkspaceLeaf } from 'obsidian';
-import { calendarOpenModeForClick, ensureSidebarView, FILE_EXPLORER_VIEW_TYPE, leafBelowFileExplorer, noteSplitLeaf, oppositeTabLeaf, openCalendarLeaf, sideTabLeaf } from '../src/calendar-open';
+import { calendarOpenModeForClick, ensureBelowFileExplorer, FILE_EXPLORER_VIEW_TYPE, leafBelowFileExplorer, noteSplitLeaf, oppositeTabLeaf, openCalendarLeaf, sideTabLeaf } from '../src/calendar-open';
 
 const viewType = 'event-notes-view';
 
@@ -207,19 +207,31 @@ test('from a right sidebar, Left opens in the main area and Right splits the sid
   assert.deepEqual(splits, [{ from: calendar, direction: 'vertical' }]);
 });
 
-test('the month calendar goes below the file explorer in the left sidebar', () => {
+test('the month calendar goes below the file explorer in the left sidebar, on the bottom third', () => {
   const leftSplit = {}; const rightSplit = {};
   const calls: unknown[][] = [];
-  const explorer = { getRoot: () => leftSplit };
-  const below = { name: 'below' };
+  const sized = (name: string) => ({ setDimension: (size: number) => { calls.push([name, Math.round(size)]); } });
+  const explorer = { getRoot: () => leftSplit, parent: sized('explorer') };
+  const below = { name: 'below', parent: sized('below') };
   const workspace = {
     leftSplit, rightSplit,
     getLeavesOfType: (type: string) => type === FILE_EXPLORER_VIEW_TYPE ? [explorer] : [],
     createLeafBySplit: (...args: unknown[]) => { calls.push(args); return below; },
     getLeftLeaf: () => { throw new Error('should split the explorer'); },
+    requestSaveLayout: () => { calls.push(['save']); },
   } as unknown as Workspace;
   assert.equal(leafBelowFileExplorer(workspace), below as unknown as WorkspaceLeaf);
-  assert.deepEqual(calls, [[explorer, 'horizontal']]);
+  assert.deepEqual(calls, [[explorer, 'horizontal'], ['explorer', 67], ['below', 33], ['save']]);
+});
+
+test('the split below the file explorer stays even when Obsidian cannot size it', () => {
+  const leftSplit = {};
+  const explorer = { getRoot: () => leftSplit, parent: {} };
+  const below = { name: 'below', parent: {} };
+  const workspace = {
+    leftSplit, getLeavesOfType: () => [explorer], createLeafBySplit: () => below, requestSaveLayout: () => undefined,
+  } as unknown as Workspace;
+  assert.equal(leafBelowFileExplorer(workspace), below as unknown as WorkspaceLeaf);
 });
 
 test('without a file explorer in the left sidebar the month calendar takes a new left group', () => {
@@ -230,19 +242,20 @@ test('without a file explorer in the left sidebar the month calendar takes a new
     getLeavesOfType: () => [{ getRoot: () => ({}) }],
     createLeafBySplit: () => { throw new Error('the explorer is not in the left sidebar'); },
     getLeftLeaf: (split: boolean) => { splits.push(split); return fallback; },
+    requestSaveLayout: () => { throw new Error('nothing was sized'); },
   } as unknown as Workspace;
   assert.equal(leafBelowFileExplorer(workspace), fallback as unknown as WorkspaceLeaf);
   assert.deepEqual(splits, [true]);
 });
 
-test('startup adds the month calendar to the right sidebar only when it is not open anywhere', async () => {
+test('startup adds the month calendar below the file explorer only when it is not open anywhere', async () => {
   const states: unknown[] = [];
-  const right = { setViewState: async (state: unknown) => { states.push(state); } };
+  const left = { setViewState: async (state: unknown) => { states.push(state); } };
   let open: unknown[] = [];
-  const workspace = { getLeavesOfType: () => open, getRightLeaf: () => right } as unknown as Workspace;
-  assert.equal(await ensureSidebarView(workspace, 'months'), right as unknown as WorkspaceLeaf);
+  const workspace = { leftSplit: {}, getLeavesOfType: (type: string) => type === 'months' ? open : [], getLeftLeaf: () => left } as unknown as Workspace;
+  assert.equal(await ensureBelowFileExplorer(workspace, 'months'), left as unknown as WorkspaceLeaf);
   assert.deepEqual(states, [{ type: 'months', active: false }]);
   open = [{}];
-  assert.equal(await ensureSidebarView(workspace, 'months'), undefined);
+  assert.equal(await ensureBelowFileExplorer(workspace, 'months'), undefined);
   assert.equal(states.length, 1);
 });

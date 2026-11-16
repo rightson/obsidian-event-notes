@@ -8,7 +8,7 @@ import { patchSubscription, subscriptionStatus } from './subscription-settings';
 import { PROBLEM_LABELS, PROBLEM_ORDER } from './note-problems';
 import { holidayOptions, isCalendarKind, isHolidayShade, type HolidayOptions } from './holidays';
 import {
-  agendaSummary, clickingSummary, diagnosticsSummary, displaySummary, ganttSummary, monthsSummary, notePathsSummary,
+  agendaSummary, clickingSummary, diagnosticsSummary, displaySummary, ganttSummary, monthsSummary, ribbonSummary, notePathsSummary,
   readOpenSections, revealOnLookup, sectionHeading, sourceSectionKey, sourceSummary, startsOpen, subscriptionsSummary, withSectionOpen, type SectionSummary,
 } from './settings-sections';
 
@@ -136,8 +136,13 @@ export class CalendarNoteSettingTab extends PluginSettingTab {
           ['dialog', 'Show event details'], ['split', 'Open Event Note beside the calendar'], ['tab', 'Open Event Note in a new tab'],
         ], 'In the main calendar. The event details dialog can still open the Event Note either way.'),
       ] }),
+      this.section('ribbon', () => ribbonSummary(settings()), { type: 'group', heading: 'Ribbon icons', items: [
+        this.toggle('Main calendar', 'Opens the calendar in a new tab.', 'ribbonCalendar'),
+        this.toggle('Events sidebar', 'Opens the events sidebar in the right sidebar.', 'ribbonAgenda'),
+        this.toggle('Month calendar', 'Opens the month calendar, below the file explorer the first time.', 'ribbonMonths'),
+      ] }),
       this.section('months', () => monthsSummary(settings()), { type: 'group', heading: 'Month calendar', items: [
-        this.toggle('Add to the right sidebar at startup', 'Only when the month calendar is not already open. Drag its tab to move it; it stays where you put it.', 'monthsOnStartup'),
+        this.toggle('Add below the file explorer at startup', 'Only when the month calendar is not already open. It takes the bottom third of the left sidebar. Drag its tab to move it; it stays where you put it.', 'monthsOnStartup'),
         this.dropdown('Show at least', 'monthsMinimum',
           Array.from({ length: MONTHS_MINIMUM_MAX }, (_, i) => [String(i + 1), i ? `${i + 1} months` : '1 month'] as [string, string]),
           'In a short panel, month cards get smaller until this many months fit. A taller panel shows more at full size.'),
@@ -389,7 +394,7 @@ export class CalendarNoteSettingTab extends PluginSettingTab {
       });
     } };
   }
-  private toggle(name: string, desc: string, key: 'moveEventNotes' | 'monthsOnStartup' | 'agendaKeepTime' | 'ganttConfirmWrites'): SettingDefinition {
+  private toggle(name: string, desc: string, key: 'moveEventNotes' | 'ribbonCalendar' | 'ribbonAgenda' | 'ribbonMonths' | 'monthsOnStartup' | 'agendaKeepTime' | 'ganttConfirmWrites'): SettingDefinition {
     return { name, desc, render: setting => {
       setting.addToggle(toggle => {
         toggle.setValue(this.plugin.store.state.settings[key]).onChange(value => {

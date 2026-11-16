@@ -67,6 +67,11 @@ export function clickingSummary(settings: PluginSettings): SectionSummary {
   return calm(`Event: ${event} · Empty slot: ${slot}`);
 }
 
+export function ribbonSummary(settings: PluginSettings): SectionSummary {
+  const shown = [settings.ribbonCalendar && 'calendar', settings.ribbonAgenda && 'events sidebar', settings.ribbonMonths && 'month calendar'].filter(Boolean);
+  return calm(shown.length ? capitalize(shown.join(', ')) : 'None');
+}
+
 export function monthsSummary(settings: PluginSettings): SectionSummary {
   return calm(`At least ${plural(settings.monthsMinimum, 'month')} · ${settings.monthsOnStartup ? 'added' : 'not added'} at startup`);
 }
