@@ -20,6 +20,8 @@ import { migrateLegacyData } from './migrate';
 import { EventNoteService, type ChooseNote } from './events';
 import { SubscriptionService, type RefreshOptions } from './subscriptions';
 import { RefreshNotice } from './refresh-notice';
+import { ImportProblemsModal } from './import-problems-modal';
+import { importReports, type CalendarImportReport } from './import-problems';
 import { refreshSummary } from './refresh-progress';
 import { SourceSyncService } from './sync';
 import { SettingsUpdateQueue, newSubscription, patchSubscription } from './subscription-settings';
@@ -57,6 +59,7 @@ export default class CalendarNotePlugin extends Plugin {
   private settingTab?: CalendarNoteSettingTab;
   private settingsUpdates!: SettingsUpdateQueue<RefreshOptions>;
   private problemsModal?: EventNoteProblemsModal;
+  private importModal?: ImportProblemsModal;
   projects!: ProjectIndex;
   projectWriter!: ProjectWriter;
   private ganttActionViews = new WeakSet<MarkdownView>();
@@ -159,6 +162,7 @@ export default class CalendarNotePlugin extends Plugin {
     this.addCommand({ id: 'change-history', name: 'Show change history', callback: () => this.showHistory() });
     this.addCommand({ id: 'add-subscription', name: 'Add calendar subscription', callback: () => this.showAddSubscription() });
     this.addCommand({ id: 'retry-recovery', name: 'Retry pending recovery', callback: () => void this.retryRecovery() });
+    this.addCommand({ id: 'calendar-import-problems', name: 'Show calendar import problems', callback: () => this.showImportProblems() });
     this.addCommand({ id: 'review-event-note-problems', name: 'Review Event Note problems', callback: () => this.showProblems() });
     this.settingTab = new CalendarNoteSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
@@ -235,6 +239,7 @@ export default class CalendarNotePlugin extends Plugin {
     for (const view of this.getMonthsViews()) view.refresh();
     for (const view of this.getAgendaViews()) view.refresh();
     this.settingTab?.refreshSubscriptionStatus();
+    this.importModal?.update();
   }
   getVisibleRange(): CalendarRange | undefined { return this.range; }
   private updateEventsFromCache(): void {
@@ -316,7 +321,8 @@ export default class CalendarNotePlugin extends Plugin {
       });
       return;
     }
-    const progress = new RefreshNotice({ running: 'Refreshing calendars', failed: 'Calendar refresh failed' });
+    const progress = new RefreshNotice({ running: 'Refreshing calendars', failed: 'Calendar refresh failed' }, undefined,
+      () => this.showImportProblems());
     try {
       if (!this.ready) throw new Error('Event Notes is still starting. Try again in a moment.');
       if (this.store.recoveryConflict) { this.showRecovery(); throw new Error('Resolve pending recovery before refreshing calendars.'); }
@@ -556,7 +562,7 @@ export default class CalendarNotePlugin extends Plugin {
     const name = patch.name ?? this.store.state.settings.sources.find(source => source.id === id)?.name ?? 'calendar';
     const progress = new RefreshNotice(enabled
       ? { running: `Turning on “${name}”`, failed: `Could not refresh “${name}”` }
-      : { running: `Turning off “${name}”`, failed: `Could not turn off “${name}”` }, id);
+      : { running: `Turning off “${name}”`, failed: `Could not turn off “${name}”` }, id, () => this.showImportProblems());
     let saved = false;
     try {
       progress.start('settings');
@@ -632,6 +638,21 @@ export default class CalendarNotePlugin extends Plugin {
     if (this.ready) this.subscriptions.start();
     if (this.ready && this.range) await this.subscriptions.refresh(this.range, refresh);
     this.scheduleScan();
+  }
+
+  /** Per subscription: why its refresh failed, and which events were skipped and why. */
+  get importReports(): CalendarImportReport[] {
+    return importReports(this.store.state.settings, this.store.state.sourceCaches, id => this.subscriptions?.getSkipped(id) ?? []);
+  }
+
+  showImportProblems(): void {
+    if (this.importModal) return;
+    this.importModal = new ImportProblemsModal(this.app, {
+      reports: () => this.importReports,
+      refresh: () => this.refresh(true),
+      closed: () => { this.importModal = undefined; },
+    });
+    this.importModal.open();
   }
 
   showHistory(): void {

@@ -1,4 +1,5 @@
 import { safeStoredSourceError, type SourceCache } from './history';
+import { skippedLine } from './import-problems';
 import type { CalendarKind, CalendarSource, PluginSettings } from './types';
 
 /** Queue complete settings saves, then resolve each edit against the latest state. */
@@ -70,10 +71,11 @@ export function safeSubscriptionError(error: string | undefined): string | undef
   return safeStoredSourceError(error);
 }
 
-export function subscriptionStatus(source: CalendarSource, cache: SourceCache | undefined, visibleCount?: number): string {
+export function subscriptionStatus(source: CalendarSource, cache: SourceCache | undefined, visibleCount?: number, skipped = 0): string {
   if (!source.url.trim()) return 'Inactive: add a subscription URL.';
   if (!source.enabled) return 'Disabled. Enable this subscription to refresh it.';
-  const countText = visibleCount === undefined ? '' : ` ${visibleCount} ${visibleCount === 1 ? 'event' : 'events'} in the current view.`;
+  const countText = (visibleCount === undefined ? '' : ` ${visibleCount} ${visibleCount === 1 ? 'event' : 'events'} in the current view.`)
+    + (skipped ? ` ${skippedLine(skipped)}` : '');
   const error = safeSubscriptionError(cache?.error);
   if (error) return `Last refresh failed: ${error}${countText}`;
   if (cache?.lastSuccess) return `Last refreshed: ${cache.lastSuccess}.${countText}`;

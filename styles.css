@@ -512,3 +512,19 @@ body:not(.is-phone) .modal.cn-event-modal { width: min(1100px, 80vw); min-width:
 .cn-daily-folder-paths code { word-break: break-all; }
 .cn-daily-folder-warning { padding: var(--size-4-2) var(--size-4-3); border-inline-start: 3px solid var(--color-orange); background: var(--background-secondary); border-radius: var(--radius-s); }
 .cn-daily-folder-warning p { margin: 0; }
+.cn-subscription-failure.is-warning { background: color-mix(in srgb, var(--color-orange) 18%, transparent); color: var(--text-normal); }
+.cn-subscription-failure a { color: inherit; text-decoration: underline; }
+.cn-refresh-notice.is-warning .cn-refresh-bar-fill { background: var(--color-orange); }
+.cn-import-modal { width: min(760px, 94vw); max-width: none; }
+.cn-import-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.cn-import-buttons { display: flex; gap: 6px; }
+.cn-import-calendar { margin: 0 0 16px; overflow-wrap: anywhere; }
+.cn-import-calendar h3 { margin: 0 0 4px; }
+.cn-import-status { color: var(--text-muted); font-size: var(--font-ui-small); margin-bottom: 8px; }
+.cn-import-error { margin-bottom: 6px; padding: 7px 10px; border-radius: 6px; background: var(--background-modifier-error); color: var(--text-error); font-size: var(--font-ui-small); }
+.cn-import-event { border: 1px solid var(--background-modifier-border); border-left: 4px solid var(--color-orange); border-radius: 8px; padding: 10px 12px; margin: 0 0 8px; }
+.cn-import-event-title { font-weight: var(--font-semibold, 600); }
+.cn-import-event-reason { margin: 2px 0 6px; }
+.cn-import-event dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; font-size: var(--font-ui-small); }
+.cn-import-event dt { color: var(--text-muted); }
+.cn-import-event dd { margin: 0; user-select: text; }
