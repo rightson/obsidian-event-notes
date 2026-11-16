@@ -6,7 +6,7 @@ import { pathKey, type NoteLink } from './state';
 import { CalendarStore, type PlannedWrite } from './store';
 import type { CalendarEvent, Interval, PluginSettings } from './types';
 import { adoptEventFrontmatter, assertValidFrontmatter, detachEventFrontmatter, eventBullet, eventBulletText, hasEventBullet, managedEventKeys, newEventNote, parseEventNote, removeDuplicateEventNoteTitle, removeEventBullets, restoreEventFrontmatter, upsertEventBullet, validateEventInterval, validateInterval, writeEventFrontmatter } from './notes';
-import { mergeNoteText, noteEvent, type EventNoteProblem, type NoteFacts, type NoteReference } from './note-problems';
+import { matchNotesToEvents, mergeNoteText, noteEvent, summaryMessage, type EventNoteProblem, type NoteFacts, type NoteReference } from './note-problems';
 
 /**
  * Narrows a Vault entry to a file. TFile is only imported as a type so the
@@ -37,7 +37,18 @@ function sameEffectiveInterval(note: { start: string; end: string; allDay: boole
   return Date.parse(note.start) === Date.parse(source.start) && Date.parse(note.end) === Date.parse(source.end);
 }
 
-interface Orphan { path: string; uid: string; recurrenceId?: string }
+/** A note as the scan read it, with the event_id it carried then. */
+interface ScannedNote { path: string; content: string; id: string; title: string; start: string; allDay: boolean }
+
+interface Orphan extends ScannedNote { uid: string; recurrenceId?: string }
+
+/**
+ * A note whose calendar identity matches no listed event. `removed` notes
+ * still show their last accepted event, so they are reported only if reconnected.
+ */
+interface LostNote extends ScannedNote { cause: 'unlisted' | 'orphan' | 'removed'; sourceId?: string }
+
+const isListed = (event: CalendarEvent): boolean => event.status !== 'removed' && event.status !== 'cancelled';
 
 /** Asks the user which of several matching Event Notes keeps the event; undefined when cancelled. */
 export type ChooseNote = (paths: string[]) => Promise<string | undefined>;
@@ -171,6 +182,7 @@ export class EventNoteService {
     const overrides = { ...this.store.state.overrides };
     const configured = new Set(this.getSettings().sources.map(source => source.id));
     const orphans: Orphan[] = [];
+    const lost: LostNote[] = [];
     const markdownPaths = await this.store.io.listMarkdown();
     for (const remembered of this.lastValid.keys()) if (!markdownPaths.includes(remembered)) this.lastValid.delete(remembered);
     for (const path of markdownPaths) {
@@ -190,7 +202,8 @@ export class EventNoteService {
         // Reconnected after this loop, together with any copies of the same note.
         if (note.source && note.uid && !note.id.startsWith('local|') && !configured.has(note.source)
           && !this.store.state.sourceCaches[note.source]?.accepted[note.id]) {
-          orphans.push({ path, uid: note.uid, recurrenceId: note.recurrenceId });
+          orphans.push({ path, content, id: note.id, title: note.title, start: note.start, allDay: note.allDay,
+            uid: note.uid, recurrenceId: note.recurrenceId });
           continue;
         }
         if (!note.id.trim()) { report('invalid', path, 'The event_id is empty; the note was skipped.'); continue; }
@@ -210,10 +223,12 @@ export class EventNoteService {
           if (!note.source || !note.uid) { report('invalid', path, 'This imported Event Note is missing its source or ical_uid property.'); continue; }
           const accepted = this.store.state.sourceCaches[note.source]?.accepted[note.id]?.event;
           if (!accepted || accepted.uid !== note.uid || accepted.recurrenceId !== note.recurrenceId) {
-            const name = this.getSettings().sources.find(source => source.id === note.source)?.name ?? note.source;
-            problems.push({ kind: 'unlisted', paths: [path], sourceId: note.source,
-              message: `${path}: Calendar "${name}" does not list this event. It may have been deleted from the calendar, or the note's event_id, ical_uid or recurrence_id was edited.` });
+            // Reported after the scan, unless a listed event has its start and title.
+            lost.push({ path, content, id: note.id, title: note.title, start: note.start, allDay: note.allDay, cause: 'unlisted', sourceId: note.source });
             continue;
+          }
+          if (accepted.status === 'removed') {
+            lost.push({ path, content, id: note.id, title: note.title, start: note.start, allDay: note.allDay, cause: 'removed', sourceId: note.source });
           }
           const difference = !sameEffectiveInterval(note, accepted);
           // A changed note interval is a user override, so it keeps the editing minimum.
@@ -236,7 +251,8 @@ export class EventNoteService {
         ? `${group[1]}: Has the same event_id as ${group[0]}, so both are skipped. Delete or merge one of them.`
         : `${group.join(', ')}: These ${group.length} notes have the same event_id, so all are skipped. Keep one and delete or merge the others.` });
     }
-    await this.reconnectOrphans(orphans, configured, problems);
+    const held = new Set([...paths.keys(), ...await this.reconnectOrphans(orphans, configured, problems, lost)]);
+    const reconnected = await this.reconnectByTimeAndTitle(lost, configured, held, ambiguous, problems);
     this.problems = problems;
     for (const [id, currentPath] of paths) {
       const linked = this.store.state.noteLinks[id];
@@ -244,6 +260,11 @@ export class EventNoteService {
         try { await this.handleRename({ path: currentPath, extension: 'md' }, linked.eventPath); }
         catch (error) { report('error', currentPath, error instanceof Error ? error.message : 'Could not relink renamed Event Note.'); }
       }
+    }
+    // An adoption during this scan already moved its override to the new event.
+    for (const id of reconnected) {
+      if (this.store.state.overrides[id]) overrides[id] = this.store.state.overrides[id];
+      else delete overrides[id];
     }
     if (JSON.stringify(overrides) !== JSON.stringify(this.store.state.overrides)) {
       await this.store.commit([], state => { state.overrides = overrides; });
@@ -288,8 +309,11 @@ export class EventNoteService {
   /**
    * A removed subscription's notes are reconnected when exactly one current
    * calendar lists the same iCal event; the next scan then reads them as valid.
+   * Notes whose iCal event no calendar lists are added to `lost`. Returns the
+   * events these notes now hold.
    */
-  private async reconnectOrphans(orphans: Orphan[], configured: Set<string>, problems: EventNoteProblem[]): Promise<void> {
+  private async reconnectOrphans(orphans: Orphan[], configured: Set<string>, problems: EventNoteProblem[], lost: LostNote[]): Promise<string[]> {
+    const holding: string[] = [];
     const groups = new Map<string, Orphan[]>();
     for (const orphan of orphans) {
       const key = JSON.stringify([orphan.uid, orphan.recurrenceId ?? null]);
@@ -301,14 +325,18 @@ export class EventNoteService {
       const matches = Object.entries(this.store.state.sourceCaches).filter(([id]) => configured.has(id))
         .flatMap(([, cache]) => Object.values(cache.accepted).map(item => item.event))
         .filter(event => event.uid === uid && event.recurrenceId === recurrenceId);
-      if (matches.length !== 1) {
-        const reason = matches.length ? 'more than one current calendar lists this event' : 'no current calendar lists this event';
+      if (!matches.length) {
+        for (const orphan of group) lost.push({ ...orphan, cause: 'orphan' });
+        continue;
+      }
+      if (matches.length > 1) {
         for (const { path } of group) {
-          problems.push({ kind: 'orphan', paths: [path], message: `${path}: ${removed}, and ${reason}. Delete the note if you no longer need it.`,
-            ...matches.length ? { candidates: matches } : {} });
+          problems.push({ kind: 'orphan', paths: [path], candidates: matches,
+            message: `${path}: ${removed}, and more than one current calendar lists this event. Delete the note if you no longer need it.` });
         }
         continue;
       }
+      holding.push(matches[0].id);
       try {
         let owner = await this.findEventPath(matches[0].id);
         if (!owner) {
@@ -326,6 +354,64 @@ export class EventNoteService {
           message: error instanceof Error ? error.message : `${group.map(item => item.path).join(', ')}: ${removed}.` });
       }
     }
+    return holding;
+  }
+
+  /**
+   * A calendar that was removed and added again, or a feed that renamed its
+   * events, leaves notes whose identity matches nothing. A note is given to the
+   * listed event with its start and title when no other note or event could be
+   * meant; the rest are reported as one problem per cause. Returns the old and
+   * new event IDs of the reconnected notes.
+   */
+  private async reconnectByTimeAndTitle(lost: LostNote[], configured: Set<string>, held: Set<string>, ambiguous: Set<string>,
+    problems: EventNoteProblem[]): Promise<string[]> {
+    const reconnected: string[] = [];
+    if (!lost.length) return reconnected;
+    const free = Object.entries(this.store.state.sourceCaches).filter(([id]) => configured.has(id))
+      .flatMap(([, cache]) => Object.values(cache.accepted).map(item => item.event))
+      .filter(event => isListed(event) && !held.has(event.id));
+    // Notes sharing an event_id are a duplicate to settle first.
+    const pairs = matchNotesToEvents(lost.filter(note => !ambiguous.has(note.id)), free);
+    const adopted = new Set<LostNote>();
+    for (const { note, event } of pairs) {
+      try {
+        const done = await this.serialized(async () => {
+          // Another note may hold the event, or this one may have changed, since they were read.
+          if (await this.findEventPath(event.id) || await this.store.io.read(note.path) !== note.content) return false;
+          await this.adoptNote(note, event);
+          return true;
+        });
+        if (!done) continue;
+        adopted.add(note);
+        reconnected.push(note.id, event.id);
+      } catch (error) {
+        adopted.add(note);
+        problems.push({ kind: 'error', paths: [note.path],
+          message: `${note.path}: Could not reconnect this note to its calendar event. ${error instanceof Error ? error.message : ''}`.trim() });
+      }
+    }
+    const groups = new Map<string, LostNote[]>();
+    for (const note of lost) {
+      if (adopted.has(note) || note.cause === 'removed') continue;
+      const key = note.cause === 'orphan' ? 'orphan' : `unlisted:${note.sourceId}`;
+      groups.set(key, [...groups.get(key) ?? [], note]);
+    }
+    for (const group of groups.values()) {
+      const [{ cause, sourceId, path }] = group;
+      const notePaths = group.map(note => note.path);
+      if (cause === 'orphan') {
+        problems.push({ kind: 'orphan', paths: notePaths, message: group.length === 1
+          ? `${path}: Created by a calendar subscription that was removed, and no current calendar lists this event. Delete the note if you no longer need it.`
+          : summaryMessage(notePaths, 'are not in any calendar') });
+      } else {
+        const name = this.getSettings().sources.find(source => source.id === sourceId)?.name ?? sourceId;
+        problems.push({ kind: 'unlisted', paths: notePaths, sourceId, message: group.length === 1
+          ? `${path}: Calendar "${name}" does not list this event. It may have been deleted from the calendar, or the note's event_id, ical_uid or recurrence_id was edited.`
+          : summaryMessage(notePaths, `are not listed by calendar "${name}"`) });
+      }
+    }
+    return reconnected;
   }
 
   async indexLocal(): Promise<CalendarEvent[]> { return (await this.scanEvents()).filter(event => event.sourceId === 'local'); }
@@ -678,6 +764,11 @@ export class EventNoteService {
     if (!chosen) {
       throw new Error(`Several Event Notes from a removed calendar match this event: ${orphans.map(orphan => orphan.path).join(', ')}. Delete or merge the extra notes, then open the event again.`);
     }
+    return this.adoptNote(chosen, event);
+  }
+
+  /** Hand a note, with its link, path claim and own times, from the event it named to `event`. */
+  private async adoptNote(chosen: { path: string; content: string; id: string }, event: CalendarEvent): Promise<CalendarEvent> {
     // Keep the user's own times; otherwise the note follows the new source.
     const override = this.store.state.overrides[chosen.id];
     const adopted = override ? { ...event, ...override, allDay: override.allDay ?? event.allDay } : event;
