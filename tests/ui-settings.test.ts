@@ -27,11 +27,21 @@ test('enabled note providers override fallbacks without changing their blank roo
   assert.deepEqual(resolveWeeklySettings(app, DEFAULT_SETTINGS), { folder: '', format: 'GGGG-[W]WW', template: '', provider: 'periodic-notes' });
 });
 
-test('the month calendar joins the right sidebar at startup unless turned off', async () => {
+test('the month calendar is added at startup unless turned off', async () => {
   const { normalizePluginSettings } = await import('../src/settings');
   assert.equal(normalizePluginSettings({}).monthsOnStartup, true);
   assert.equal(normalizePluginSettings({ monthsOnStartup: false }).monthsOnStartup, false);
   assert.equal(normalizePluginSettings({ monthsOnStartup: 'no' }).monthsOnStartup, true);
+});
+
+test('all three ribbon icons are on until turned off', async () => {
+  const { normalizePluginSettings } = await import('../src/settings');
+  const defaults = normalizePluginSettings({});
+  assert.deepEqual([defaults.ribbonCalendar, defaults.ribbonAgenda, defaults.ribbonMonths], [true, true, true]);
+  const changed = normalizePluginSettings({ ribbonCalendar: false, ribbonAgenda: true, ribbonMonths: false });
+  assert.deepEqual([changed.ribbonCalendar, changed.ribbonAgenda, changed.ribbonMonths], [false, true, false]);
+  const invalid = normalizePluginSettings({ ribbonCalendar: 'no', ribbonAgenda: 0, ribbonMonths: null });
+  assert.deepEqual([invalid.ribbonCalendar, invalid.ribbonAgenda, invalid.ribbonMonths], [true, true, true]);
 });
 
 test('the minimum month count is a whole number from 1 to 12, else 3', async () => {
