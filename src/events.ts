@@ -87,7 +87,8 @@ export class EventNoteService {
     return this.freeEventPath(eventNotePath(event, this.sourceName(event), this.app, this.getSettings()), event.id);
   }
 
-  private sourceName(event: CalendarEvent): string {
+  /** The calendar name that `{calendar}` in the Event Note pattern stands for. */
+  sourceName(event: CalendarEvent): string {
     return this.getSettings().sources.find(source => source.id === event.sourceId)?.name
       ?? (event.sourceId === 'local' ? 'Local' : event.sourceId);
   }
@@ -613,17 +614,8 @@ export class EventNoteService {
       if (!target || link.pendingRename) continue;
       const from = link.eventPath;
       try {
-        const file = this.app.vault.getAbstractFileByPath(from);
-        const content = await this.store.io.read(from);
-        let holds = false;
-        try { holds = content !== null && parseEventNote(content, from)?.id === id; }
-        catch { /* an invalid note is reported by the scan */ }
         // Turning the setting off cancels moves not carried out yet.
-        if (file && holds && this.getSettings().moveEventNotes) {
-          const destination = await this.freeEventPath(target, id);
-          await this.ensureFolder(destination);
-          await this.app.fileManager.renameFile(file, destination);
-        }
+        if (this.getSettings().moveEventNotes) await this.moveEventNote(id, from, target);
       } catch (error) {
         failures.push(`Could not move ${from} to ${target}: ${error instanceof Error ? error.message : 'unknown error'}`);
       }
@@ -634,6 +626,24 @@ export class EventNoteService {
       });
     }
     return failures;
+  }
+
+  /**
+   * Move the Event Note of `id` from `from` to `target`, or to `target (2)` when
+   * a namesake holds it, so Obsidian updates links to the note. Returns where it
+   * went; undefined when `from` no longer holds this event's note.
+   */
+  async moveEventNote(id: string, from: string, target: string): Promise<string | undefined> {
+    const file = this.app.vault.getAbstractFileByPath(from);
+    const content = await this.store.io.read(from);
+    let holds = false;
+    try { holds = content !== null && parseEventNote(content, from)?.id === id; }
+    catch { /* an invalid note is reported by the scan */ }
+    if (!file || !holds) return undefined;
+    const destination = await this.freeEventPath(target, id);
+    await this.ensureFolder(destination);
+    await this.app.fileManager.renameFile(file, destination);
+    return destination;
   }
 
   private async ensureFolder(path: string): Promise<void> {

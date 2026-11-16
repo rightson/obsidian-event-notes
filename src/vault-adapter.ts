@@ -2,6 +2,15 @@ import { normalizePath, TFile, type App, type Plugin } from 'obsidian';
 import type { RecoveryJournal, StoreIO } from './store';
 import type { StoredState } from './state';
 
+/** Create the folders above `path` that do not exist yet. */
+export async function ensureParentFolder(app: App, path: string): Promise<void> {
+  let folder = '';
+  for (const part of path.split('/').slice(0, -1)) {
+    folder = folder ? `${folder}/${part}` : part;
+    if (!app.vault.getAbstractFileByPath(folder)) await app.vault.createFolder(folder);
+  }
+}
+
 /** Vault backed compare-and-swap adapter. The store serializes transactions above it. */
 export function createObsidianStoreIO(app: App, plugin: Plugin): StoreIO {
   const journalPath = `${plugin.manifest.dir ?? `${app.vault.configDir}/plugins/${plugin.manifest.id}`}/recovery.json`;
@@ -15,15 +24,7 @@ export function createObsidianStoreIO(app: App, plugin: Plugin): StoreIO {
     const file = fileAt(path);
     return file ? app.vault.read(file) : null;
   };
-  const ensureParent = async (path: string): Promise<void> => {
-    const parts = path.split('/');
-    parts.pop();
-    let folder = '';
-    for (const part of parts) {
-      folder = folder ? `${folder}/${part}` : part;
-      if (!app.vault.getAbstractFileByPath(folder)) await app.vault.createFolder(folder);
-    }
-  };
+  const ensureParent = (path: string): Promise<void> => ensureParentFolder(app, path);
   const adapter = app.vault.adapter;
   return {
     read,

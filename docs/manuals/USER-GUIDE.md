@@ -111,12 +111,41 @@ With the plain Daily Note format `YYYY-MM-DD`, every Daily Note shares one folde
 |---|---|---|
 | `YYYY-MM-DD` | `Daily Notes/2026-10-23.md` | `Daily Notes/<title>.md` |
 | `YYYY-MM-DD/YYYY-MM-DD` | `Daily Notes/2026-10-23/2026-10-23.md` | `Daily Notes/2026-10-23/<title>.md` |
+| `YYYY/MM/MM-DD/MMMM DD` | `Daily Notes/2026/10/10-23/October 23.md` | `Daily Notes/2026/10/10-23/<title>.md` |
 
 To keep attachments in the day's folder as well, set **Settings → Files and links → Default location for new attachments** to **Same folder as current file** or **In subfolder under current folder**. Images and files added to a Daily Note or Event Note then go in that day's folder. This setting applies to the whole Vault.
 
-When the pattern starts with `{daily}` and all Daily Notes share one folder, Event Notes suggests this at startup, until the folders change or you choose **Don't show again**. The suggestion shows the paths before and after. When Event Notes provides your Daily Notes, a button changes its **Daily fallback format**. When the core Daily notes plugin provides them, change **Date format** in its settings; Event Notes reads it from there. **Give each day its own folder** under **Note paths** in settings opens it again.
+The wizard below makes this change for you and moves your existing notes.
 
-Changing the format does not move existing Daily Notes. On its next scan, Event Notes adds each linked event's entry to the Daily Note at the new path, creating that note if it is missing, and removes the entry from the old one. Move existing Daily Notes into their day folders before changing the format, so each day stays in one note. Existing Event Notes stay where they are.
+### Change Daily Note folders
+
+The **Change Daily Note folders** wizard changes the Daily Note path rule and moves your existing notes to match. Open it with **Open wizard** next to **Daily Note folders** under **Note paths** in settings, or run the **Change Daily Note folders** command. When the pattern starts with `{daily}` and all Daily Notes share one folder, Event Notes also opens it at startup, until the folders change or you choose **Don't show again**.
+
+The wizard works from any Daily Note format to any other. For example, from `YYYY/[Q]Q/MM-DD/MMM DD` to `YYYY/MM/MM-DD/MMMM DD`:
+
+| | Before | After |
+|---|---|---|
+| Daily Note | `Journal/2026/Q4/11-16/Nov 16.md` | `Journal/2026/11/11-16/November 16.md` |
+| Event Note | `Journal/2026/Q4/11-16/<title>.md` | `Journal/2026/11/11-16/<title>.md` |
+
+It has five steps, and changes nothing before the third:
+
+1. **Path rule.** **New format** starts as `YYYY/MM/MM-DD/MMMM DD`, which gives each day the folder `YYYY/MM/MM-DD` under your Daily Notes folder; edit it to any Moment date format. **Migrate from** is the format your existing notes are in. Both are checked as you type: a format must give every day its own path, and you are warned when different days would share a folder. A table shows the Daily Note and Event Note paths now and after, for real days from your Vault. The Daily Notes folder itself stays the same.
+2. **Preview.** Lists every file that would move, with its old and new path. A Daily Note is recognised by reading its whole path below the Daily Notes folder with the **Migrate from** format, so a file name without the year, such as `Nov 16`, is still matched to the right day, and any file the format does not name exactly is left alone. Files that cannot move safely are listed as skipped and are never overwritten: a file already at the new path, two files that would get the same path, or a note that fits both formats as different days.
+3. **Apply format.** When Event Notes provides your Daily Notes, a button changes its **Daily fallback format**. When the core Daily notes plugin provides them, the button changes **Date format** in that plugin's settings and nothing else; if Obsidian does not allow that, the wizard asks you to change it in **Settings → Daily notes** and continues once the format matches.
+4. **Move.** Each file is moved the way Obsidian renames a file, so wikilinks, Markdown links and embeds pointing to it are updated across the Vault. Missing folders are created, and folders the move leaves empty are removed. You can cancel between files.
+5. **Result.** Shows what moved, what was skipped or failed and why, and the attachment tip above.
+
+Besides the Daily Notes, the wizard can move:
+
+- **Event Notes**, when the pattern starts with `{daily}`: each Event Note that Event Notes filed in a Daily Note's folder moves to the folder the pattern gives now. Notes you moved elsewhere yourself stay put. Turn **Move Event Notes with their day** off to leave them all.
+- **Other files in a day's folder**, such as attachments, when the old format already gave each day a folder of its own. Turn **Move the other files in each day's folder** off to leave them. When the old format kept many days in one folder, nothing says which day a neighbouring file belongs to, so those files are listed as left in place.
+
+The text of your notes is not edited; only links to moved files are updated. Each event's entry stays in its Daily Note, and Event Notes keeps tracking it at the new path.
+
+Keep the wizard open between **Apply format** and **Move**. While the format and the notes disagree, Event Notes pauses its own updates to Daily Notes; if you close the wizard in between, its next scan adds each linked event's entry to a new Daily Note at the new path, and the old note for that day is then skipped as a conflict. If a move is cancelled or some files are skipped, run the wizard again: it remembers the earlier format as **Migrate from** and moves what is left.
+
+If you change the Daily Note format yourself instead, existing Daily Notes and Event Notes stay where they are. Run the wizard afterwards and enter the earlier format in **Migrate from** to move them.
 
 When an event moves to another date, its Event Note moves with it to the folder the pattern gives for the new date. This applies whether you drag the event, edit it in the calendar, change `start` in the note, or a subscription changes it. Obsidian updates links to the note as for any rename (when **Automatically update internal links** is on), and the Daily Note entry moves to the new Daily Note. A note you renamed keeps its name; if the target name is taken, a number is added, as in `Standup (2).md`. Notes you moved out of the pattern's folder yourself, or chose with **Change…**, stay where they are. A pattern whose folder is the same for every date, such as `[Calendar Notes]/{title}` or `{daily}/{title}` with all Daily Notes in one folder, never moves notes. Changing the pattern or Daily Notes settings affects new notes only.
 

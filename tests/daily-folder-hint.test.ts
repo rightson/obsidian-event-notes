@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { App } from 'obsidian';
-import { attachmentFolderSetting, attachmentPlacement, dailyFolderHint, dayFolderFormat, existingDailyNotes } from '../src/daily-folder-hint';
+import { attachmentFolderSetting, attachmentPlacement, dailyNotesShareFolder, setCoreDailyFormat } from '../src/daily-folder-hint';
 import { eventNotePath } from '../src/paths';
-import { DEFAULT_SETTINGS, normalizePluginSettings } from '../src/settings';
+import { DEFAULT_SETTINGS, normalizePluginSettings, resolveDailySettings } from '../src/settings';
 import type { CalendarEvent, PluginSettings } from '../src/types';
 
 const settings = (changes: Partial<PluginSettings> = {}): PluginSettings => ({ ...DEFAULT_SETTINGS, ...changes });
@@ -22,49 +22,54 @@ test('new installs file Event Notes in the folder of their Daily Note', () => {
   assert.equal(normalizePluginSettings({ eventPattern: '[Calendar Notes]/{title}' }).eventPattern, '[Calendar Notes]/{title}');
 });
 
-test('Daily Notes in one shared folder get a folder-per-day suggestion', () => {
-  const hint = dailyFolderHint(fallbackApp, settings());
-  assert.deepEqual(hint, {
-    provider: 'calendar-note', folder: 'Daily Notes', format: 'YYYY-MM-DD', suggestedFormat: 'YYYY-MM-DD/YYYY-MM-DD',
-    now: { daily: 'Daily Notes/2026-10-23.md', event: 'Daily Notes/Sample event.md' },
-    suggested: { daily: 'Daily Notes/2026-10-23/2026-10-23.md', event: 'Daily Notes/2026-10-23/Sample event.md' },
-  });
+test('Daily Notes in one shared folder get the wizard suggested at startup', () => {
+  assert.equal(dailyNotesShareFolder(fallbackApp, settings()), true);
   // Core Daily notes at the Vault root, the worst case: every Event Note would land in the root.
-  const root = dailyFolderHint(coreApp({ folder: '', format: '' }), settings({ eventPattern: '{daily}/[Events]/{title}' }));
-  assert.equal(root?.provider, 'daily-notes');
-  assert.equal(root?.folder, '');
-  assert.deepEqual(root?.now, { daily: '2026-10-23.md', event: 'Events/Sample event.md' });
-  assert.deepEqual(root?.suggested, { daily: '2026-10-23/2026-10-23.md', event: '2026-10-23/Events/Sample event.md' });
+  assert.equal(dailyNotesShareFolder(coreApp({ folder: '', format: '' }), settings({ eventPattern: '{daily}/[Events]/{title}' })), true);
   // A literal folder in the format still puts every Daily Note in one folder.
-  const literal = dailyFolderHint(fallbackApp, settings({ dailyFolder: '', dailyFormat: '[Journal]/YYYY-MM-DD' }));
-  assert.equal(literal?.suggestedFormat, '[Journal]/YYYY-MM-DD/YYYY-MM-DD');
-  assert.equal(literal?.suggested.event, 'Journal/2026-10-23/Sample event.md');
+  assert.equal(dailyNotesShareFolder(fallbackApp, settings({ dailyFolder: '', dailyFormat: '[Journal]/YYYY-MM-DD' })), true);
 });
 
 test('no suggestion when the format already adds date folders or the pattern ignores {daily}', () => {
-  for (const dailyFormat of ['YYYY-MM-DD/YYYY-MM-DD', 'YYYY/MM/YYYY-MM-DD', 'YYYY/YYYY-MM-DD']) {
-    assert.equal(dailyFolderHint(fallbackApp, settings({ dailyFormat })), undefined, dailyFormat);
+  for (const dailyFormat of ['YYYY-MM-DD/YYYY-MM-DD', 'YYYY/MM/YYYY-MM-DD', 'YYYY/YYYY-MM-DD', 'YYYY/MM/MM-DD/MMMM DD']) {
+    assert.equal(dailyNotesShareFolder(fallbackApp, settings({ dailyFormat })), false, dailyFormat);
   }
-  assert.equal(dailyFolderHint(coreApp({ folder: 'Journal', format: 'YYYY/MM/DD' }), settings()), undefined);
-  assert.equal(dailyFolderHint(fallbackApp, settings({ eventPattern: '[Calendar Notes]/{title}' })), undefined);
-  assert.equal(dailyFolderHint(fallbackApp, settings({ eventPattern: '\\{daily}/{title}' })), undefined);
+  assert.equal(dailyNotesShareFolder(coreApp({ folder: 'Journal', format: 'YYYY/MM/DD' }), settings()), false);
+  assert.equal(dailyNotesShareFolder(fallbackApp, settings({ eventPattern: '[Calendar Notes]/{title}' })), false);
+  assert.equal(dailyNotesShareFolder(fallbackApp, settings({ eventPattern: '\\{daily}/{title}' })), false);
   // Invalid settings are reported by the settings tab, not by this suggestion.
-  assert.equal(dailyFolderHint(fallbackApp, settings({ dailyFolder: '../Outside' })), undefined);
+  assert.equal(dailyNotesShareFolder(fallbackApp, settings({ dailyFolder: '../Outside' })), false);
 });
 
-test('the day folder goes right above the note name', () => {
-  assert.equal(dayFolderFormat(' YYYY-MM-DD '), 'YYYY-MM-DD/YYYY-MM-DD');
-  assert.equal(dayFolderFormat('dddd, MMMM Do YYYY'), 'YYYY-MM-DD/dddd, MMMM Do YYYY');
-  assert.equal(dayFolderFormat('[Journal]/YYYYMMDD'), '[Journal]/YYYY-MM-DD/YYYYMMDD');
-});
-
-test('Daily Notes that changing the format would leave behind are counted', () => {
-  const hint = dailyFolderHint(fallbackApp, settings())!;
-  const paths = ['Daily Notes/2026-10-23.md', 'Daily Notes/2026-10-24.MD', 'Daily Notes/Standup.md',
-    'Daily Notes/2026-10-25/2026-10-25.md', 'Elsewhere/2026-10-23.md', 'Daily Notes/2026-13-01.md', 'Daily Notes/2026-10-23.png'];
-  assert.deepEqual(existingDailyNotes(paths, hint, 'en'), ['Daily Notes/2026-10-23.md', 'Daily Notes/2026-10-24.MD']);
-  const root = dailyFolderHint(coreApp({ folder: '', format: '' }), settings())!;
-  assert.deepEqual(existingDailyNotes(['2026-10-23.md', 'Daily Notes/2026-10-23.md'], root, 'en'), ['2026-10-23.md']);
+test('the core Daily notes format is changed through the plugin’s own save, or not at all', async () => {
+  const core = (options: Record<string, unknown>, more: Record<string, unknown> = {}) => {
+    const saved: unknown[] = [];
+    const plugin: Record<string, unknown> = { enabled: true, instance: { options },
+      saveData(this: { instance: { options: unknown } }) { saved.push(structuredClone(this.instance.options)); return Promise.resolve(); }, ...more };
+    const app = { plugins: { plugins: {}, enabledPlugins: new Set() }, internalPlugins: { plugins: { 'daily-notes': plugin } } } as unknown as App;
+    return { app, saved };
+  };
+  const options = { folder: 'Journal', format: 'YYYY-MM-DD', template: 'T' };
+  const working = core(options);
+  assert.equal(await setCoreDailyFormat(working.app, settings(), 'YYYY/MM/MM-DD/MMMM DD'), true);
+  // The other options are saved untouched.
+  assert.deepEqual(working.saved, [{ folder: 'Journal', format: 'YYYY/MM/MM-DD/MMMM DD', template: 'T' }]);
+  assert.equal(resolveDailySettings(working.app, settings()).format, 'YYYY/MM/MM-DD/MMMM DD');
+  // A default format is not stored at all; a failed save leaves it that way.
+  const unset: Record<string, unknown> = { folder: '' };
+  const failing = core(unset, { saveData: () => Promise.reject(new Error('disk')) });
+  assert.equal(await setCoreDailyFormat(failing.app, settings(), 'YYYY/MM/DD'), false);
+  assert.deepEqual(unset, { folder: '' });
+  const kept = { format: 'YYYY-MM-DD' };
+  assert.equal(await setCoreDailyFormat(core(kept, { saveData: () => { throw new Error('no'); } }).app, settings(), 'YYYY/MM/DD'), false);
+  assert.deepEqual(kept, { format: 'YYYY-MM-DD' });
+  // Missing parts of the undocumented API: nothing is touched.
+  for (const more of [{ saveData: undefined }, { enabled: false }, { instance: {} }, { instance: { options: Object.freeze({ format: 'YYYY-MM-DD' }) } }, { instance: { options: { format: 7 } } }]) {
+    const broken = core({ format: 'YYYY-MM-DD' }, more);
+    assert.equal(await setCoreDailyFormat(broken.app, settings(), 'YYYY/MM/DD'), false, JSON.stringify(more));
+    assert.deepEqual(broken.saved, []);
+  }
+  assert.equal(await setCoreDailyFormat(fallbackApp, settings(), 'YYYY/MM/DD'), false);
 });
 
 test('attachments follow the note only with a folder relative to it', () => {
@@ -82,4 +87,8 @@ test('dismissing the suggestion is remembered and defaults to off', () => {
   assert.equal(normalizePluginSettings({}).dailyFolderHintDismissed, false);
   assert.equal(normalizePluginSettings({ dailyFolderHintDismissed: true }).dailyFolderHintDismissed, true);
   assert.equal(normalizePluginSettings({ dailyFolderHintDismissed: 'yes' }).dailyFolderHintDismissed, false);
+  // The format the wizard migrates from survives a restart, so a partial move can be finished.
+  assert.equal(normalizePluginSettings({}).dailyFormerFormat, '');
+  assert.equal(normalizePluginSettings({ dailyFormerFormat: 'YYYY/[Q]Q/MM-DD/MMM DD' }).dailyFormerFormat, 'YYYY/[Q]Q/MM-DD/MMM DD');
+  assert.equal(normalizePluginSettings({ dailyFormerFormat: 7 }).dailyFormerFormat, '');
 });
