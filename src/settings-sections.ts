@@ -16,9 +16,12 @@ export function startsOpen(remembered: boolean, attention: boolean): boolean {
   return remembered || attention;
 }
 
+// "Note paths" was one section before it became Event Notes, Daily Notes, and Weekly Notes.
+const RETIRED_SECTIONS = new Set(['paths']);
+
 /** Sections are closed by default, so only the open ones are stored. */
 export function readOpenSections(raw: unknown): string[] {
-  return Array.isArray(raw) ? [...new Set(raw.filter((key): key is string => typeof key === 'string'))] : [];
+  return Array.isArray(raw) ? [...new Set(raw.filter((key): key is string => typeof key === 'string' && !RETIRED_SECTIONS.has(key)))] : [];
 }
 
 /** The remembered list after a toggle; calendars that no longer exist drop out. */
@@ -52,8 +55,24 @@ const calm = (text: string): SectionSummary => ({ text, attention: false });
 const plural = (count: number, one: string, many = `${one}s`): string => `${count} ${count === 1 ? one : many}`;
 const capitalize = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);
 
-export function notePathsSummary(settings: PluginSettings): SectionSummary {
-  return calm(`Event Notes: ${settings.eventPattern}`);
+export function eventNotesSummary(settings: PluginSettings): SectionSummary {
+  return calm(settings.eventPattern);
+}
+
+/** How the provider rows and the section summaries name where Daily or Weekly Notes come from. */
+export const providerLabel = (provider: string): string => provider === 'calendar-note' ? 'this plugin' : provider;
+
+/**
+ * Daily Notes and Weekly Notes: the path of the sample date and its provider. Working the path out
+ * can throw on a bad folder or format; the rows already show that, so it does not force the section open.
+ */
+export function periodicNotesSummary(resolve: () => { path: string; provider: string }): SectionSummary {
+  try {
+    const { path, provider } = resolve();
+    return calm(`${path} · ${providerLabel(provider)}`);
+  } catch (error) {
+    return calm(error instanceof Error ? error.message : 'Path unavailable');
+  }
 }
 
 export function displaySummary(settings: PluginSettings): SectionSummary {
