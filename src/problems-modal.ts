@@ -137,6 +137,7 @@ export class EventNoteProblemsModal extends Modal {
     card.createEl('p', { cls: 'cn-problem-explanation', text: explanation });
     this.renderImpact(card, problem, notes);
     if (problem.kind === 'duplicate') this.renderDuplicate(card, problem, notes);
+    else if (notes.length > 1) this.renderGroup(card, problem, notes);
     else this.renderSingle(card, problem, notes[0]);
     card.createDiv({ cls: 'cn-problem-error cn-validation', attr: { role: 'alert' } });
   }
@@ -149,10 +150,14 @@ export class EventNoteProblemsModal extends Modal {
       element.createSpan({ cls: 'cn-problem-impact-label', text: label });
       return element.createDiv({ cls: 'cn-problem-impact-value' });
     };
+    // Several notes with one cause each have their own event, listed with the notes below.
+    const grouped = problem.kind !== 'duplicate' && notes.length > 1;
     const main = problem.kind === 'duplicate' ? notes.find(note => note.path === this.keepFor(problem, notes)) : notes[0];
     const event = main?.event ?? notes.find(note => note.event)?.event;
-    const eventRow = row('Event');
-    if (event) {
+    const eventRow = row(grouped ? 'Events' : 'Event');
+    if (grouped) {
+      eventRow.setText(`${notes.length} notes, each for its own event. They are listed below.`);
+    } else if (event) {
       eventRow.createEl('strong', { text: event.title });
       const when = this.when(event.start, event.end, event.allDay);
       if (when) eventRow.appendText(` · ${when}`);
@@ -165,7 +170,7 @@ export class EventNoteProblemsModal extends Modal {
       .filter((reference, index, all) => all.findIndex(other => other.path === reference.path && other.target === reference.target && other.line === reference.line) === index);
     const linked = row('Linked from');
     if (!references.length) {
-      linked.setText('No other note links to this note.');
+      linked.setText(grouped ? 'No other note links to these notes.' : 'No other note links to this note.');
       return;
     }
     const list = linked.createEl('ul', { cls: 'cn-problem-references' });
@@ -178,7 +183,7 @@ export class EventNoteProblemsModal extends Modal {
       if (notes.length > 1) item.appendText(` → ${reference.target}`);
     }
     if (problem.kind !== 'duplicate') {
-      box.createDiv({ cls: 'cn-muted', text: `If you move the note to trash, ${references.length === 1 ? 'this link points' : 'these links point'} to a missing note. If you keep it as an ordinary note, ${references.length === 1 ? 'it keeps' : 'they keep'} working.` });
+      box.createDiv({ cls: 'cn-muted', text: `If you move the ${grouped ? 'notes' : 'note'} to trash, ${references.length === 1 ? 'this link points' : 'these links point'} to a missing note. If you keep ${grouped ? 'them as ordinary notes' : 'it as an ordinary note'}, ${references.length === 1 ? 'it keeps' : 'they keep'} working.` });
     }
   }
 
@@ -306,6 +311,35 @@ export class EventNoteProblemsModal extends Modal {
       this.confirmButton(actions, 'Move to trash', () => this.actions.release(note.path, 'trash', seen), card);
     }
     if (problem.kind === 'error') button('Scan again', () => this.actions.scan());
+  }
+
+  /** Notes that share one cause: listed by path and event, and released together. */
+  private renderGroup(card: HTMLElement, problem: EventNoteProblem, notes: NoteFacts[]): void {
+    const list = card.createEl('ul', { cls: 'cn-problem-references' });
+    for (const note of notes) {
+      const item = list.createEl('li');
+      const link = item.createEl('a', { text: note.path, href: '#', attr: { title: 'Open this note in a new tab' } });
+      link.addEventListener('click', click => { click.preventDefault(); void this.openNote(note.path); });
+      if (note.content === null) { item.appendText(' — no longer exists'); continue; }
+      const when = note.event ? this.when(note.event.start, note.event.end, note.event.allDay) : '';
+      if (note.event) item.appendText(` — ${note.event.title}${when ? ` · ${when}` : ''}`);
+    }
+    const existing = notes.filter(note => note.content !== null);
+    const seen = this.seen(existing);
+    const count = existing.length;
+    // One at a time: a note that changed since it was shown stops the rest, and those already done stay done.
+    const release = (action: 'detach' | 'trash') => async () => {
+      for (const note of existing) await this.actions.release(note.path, action, seen);
+    };
+    const actions = card.createDiv({ cls: 'cn-history-actions' });
+    if (problem.kind === 'unlisted') {
+      const refresh = actions.createEl('button', { text: 'Refresh calendars' });
+      refresh.addEventListener('click', () => void this.run(refresh, () => this.actions.refreshCalendars(), card));
+    }
+    if (!count) return;
+    const keep = actions.createEl('button', { text: `Keep all ${count} as ordinary notes` });
+    keep.addEventListener('click', () => void this.run(keep, release('detach'), card));
+    this.confirmButton(actions, `Move all ${count} to trash`, release('trash'), card);
   }
 
   /** Path, badges, properties and text of one note; lines missing from `kept` are highlighted. */

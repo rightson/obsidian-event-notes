@@ -988,6 +988,183 @@ test('scan diagnostics say why an imported note is not shown', async () => {
   assert.deepEqual(service.diagnostics, [`${path}: Created by a calendar subscription that was removed, and no current calendar lists this event. Delete the note if you no longer need it.`]);
 });
 
+const renewed = (sourceId: string, uid: string, extra: Partial<CalendarEvent> = {}): CalendarEvent => ({ id: sourceEventId(sourceId, uid), sourceId, uid,
+  title: 'FW: Meeting', start, end, allDay: false, status: 'active', ...extra });
+const cacheOf = (...events: CalendarEvent[]) => ({ ...emptySourceCache(),
+  accepted: Object.fromEntries(events.map(event => [event.id, { event, revision: 0 }])) });
+const unlistedMessage = (path: string) => `${path}: Calendar "Work" does not list this event. It may have been deleted from the calendar, or the note's event_id, ical_uid or recurrence_id was edited.`;
+
+test('a note whose calendar changed every UID is reconnected by start time and title', async () => {
+  const { io, service, store, old } = resubscribed();
+  const path = await service.openEvent(old);
+  io.files.set(path, `${io.files.get(path)!.replace('---\n', '---\nproject: "Alpha"\n')}Minutes.\n`);
+  const before = io.files.get(path)!;
+  const link = store.state.noteLinks[old.id];
+  const fresh = renewed('old', 'uid-new');
+  store.state.sourceCaches.old = cacheOf(fresh);
+  await service.scanEvents();
+  assert.deepEqual(service.diagnostics, []);
+  // Only the identity changed: the text and other properties are byte-identical.
+  assert.equal(io.files.get(path), before.replace(JSON.stringify(old.id), JSON.stringify(fresh.id)).replace('ical_uid: "uid-fw"', 'ical_uid: "uid-new"'));
+  assert.equal(store.state.noteLinks[old.id], undefined);
+  assert.deepEqual(store.state.noteLinks[fresh.id], link);
+  assert.deepEqual(store.state.pathTypes['calendar notes/fw meeting.md'], { type: 'event', ownerId: fresh.id });
+  const scanned = await service.scanEvents();
+  assert.deepEqual(service.diagnostics, []);
+  assert.deepEqual(scanned.map(event => [event.id, event.title]), [[fresh.id, 'FW: Meeting']]);
+  assert.equal(await service.openEvent(fresh), path);
+});
+
+test('a note whose event the feed stopped listing follows the same event under its new UID', async () => {
+  const { io, service, store, old } = resubscribed();
+  const path = await service.openEvent(old);
+  const fresh = renewed('old', 'uid-new');
+  store.state.sourceCaches.old = cacheOf({ ...old, status: 'removed' }, fresh);
+  await service.scanEvents();
+  assert.deepEqual(service.diagnostics, []);
+  assert.equal(parseEventNote(io.files.get(path)!, path)?.id, fresh.id);
+  assert.equal(store.state.noteLinks[fresh.id].eventPath, path);
+  await service.scanEvents();
+  assert.deepEqual(service.diagnostics, []);
+  assert.equal(parseEventNote(io.files.get(path)!, path)?.id, fresh.id);
+  assert.equal(store.state.overrides[old.id], undefined);
+});
+
+test('a note whose event the feed stopped listing is left alone when no new event matches', async () => {
+  const { io, service, store, old } = resubscribed();
+  const path = await service.openEvent(old);
+  const before = io.files.get(path)!;
+  store.state.sourceCaches.old = cacheOf({ ...old, status: 'removed' }, renewed('old', 'uid-new', { title: 'Another meeting' }));
+  await service.scanEvents();
+  assert.deepEqual(service.diagnostics, []);
+  assert.equal(io.files.get(path), before);
+  assert.equal(store.state.noteLinks[old.id].eventPath, path);
+});
+
+test('a calendar removed and added again with new UIDs reconnects by start time and title', async () => {
+  const { io, service, store, old, resubscribe } = resubscribed();
+  const path = await service.openEvent(old);
+  delete store.state.sourceCaches.old;
+  resubscribe();
+  const fresh = renewed('new', 'uid-other');
+  store.state.sourceCaches.new = cacheOf(fresh);
+  await service.scanEvents();
+  assert.deepEqual(service.diagnostics, []);
+  assert.equal(parseEventNote(io.files.get(path)!, path)?.id, fresh.id);
+  assert.match(io.files.get(path)!, /source: "new"/);
+  assert.match(io.files.get(path)!, /ical_uid: "uid-other"/);
+  await service.scanEvents();
+  assert.deepEqual(service.diagnostics, []);
+});
+
+test('a reconnected note takes the new event\'s end time', async () => {
+  const { io, service, store, old } = resubscribed();
+  const path = await service.openEvent(old);
+  const fresh = renewed('old', 'uid-new', { end: '2026-10-22T12:00:00+08:00' });
+  store.state.sourceCaches.old = cacheOf(fresh);
+  await service.scanEvents();
+  const note = parseEventNote(io.files.get(path)!, path)!;
+  assert.deepEqual([note.id, note.start, note.end], [fresh.id, start, '2026-10-22T12:00:00+08:00']);
+  await service.scanEvents();
+  assert.deepEqual(service.diagnostics, []);
+  assert.equal(store.state.overrides[fresh.id], undefined);
+});
+
+test('a reconnected note keeps the times the user gave it', async () => {
+  const { io, service, store, old } = resubscribed();
+  const path = await service.openEvent(old);
+  const moved = { start: '2026-10-22T14:00:00+08:00', end: '2026-10-22T15:00:00+08:00', allDay: false };
+  await service.reschedule(old, moved);
+  const fresh = renewed('old', 'uid-new', { start: moved.start, end: '2026-10-22T16:00:00+08:00' });
+  store.state.sourceCaches.old = cacheOf(fresh);
+  await service.scanEvents();
+  assert.equal(parseEventNote(io.files.get(path)!, path)?.id, fresh.id);
+  assert.match(io.files.get(path)!, /end: "2026-10-22T15:00:00\+08:00"/);
+  assert.deepEqual(store.state.overrides[fresh.id], moved);
+  assert.equal(store.state.overrides[old.id], undefined);
+  await service.scanEvents();
+  assert.deepEqual(store.state.overrides[fresh.id], moved);
+});
+
+test('a note is not reconnected when two events, or two notes, could match', async () => {
+  const { io, service, store, old } = resubscribed();
+  const path = await service.openEvent(old);
+  const before = io.files.get(path)!;
+  store.state.sourceCaches.old = cacheOf(renewed('old', 'uid-a'), renewed('old', 'uid-b'));
+  await service.scanEvents();
+  assert.deepEqual(service.diagnostics, [unlistedMessage(path)]);
+  assert.equal(io.files.get(path), before);
+
+  const twin = 'Calendar Notes/Twin.md';
+  const twinId = sourceEventId('old', 'uid-twin');
+  io.files.set(twin, before.replace(JSON.stringify(old.id), JSON.stringify(twinId)).replace('"uid-fw"', '"uid-twin"'));
+  store.state.sourceCaches.old = cacheOf(renewed('old', 'uid-a'));
+  await service.scanEvents();
+  assert.deepEqual(service.problems.map(problem => [problem.kind, problem.sourceId, problem.paths]), [['unlisted', 'old', [path, twin]]]);
+  assert.deepEqual(service.diagnostics, [`2 Event Notes are not listed by calendar "Work": ${path}, ${twin}`]);
+  assert.equal(io.files.get(path), before);
+});
+
+test('an event that already has a note is not taken by another note', async () => {
+  const { io, service, store, old } = resubscribed();
+  const path = await service.openEvent(old);
+  const before = io.files.get(path)!;
+  const fresh = renewed('old', 'uid-new');
+  const holder = 'Calendar Notes/Holder.md';
+  io.files.set(holder, before.replace(JSON.stringify(old.id), JSON.stringify(fresh.id)).replace('"uid-fw"', '"uid-new"'));
+  store.state.sourceCaches.old = cacheOf(fresh);
+  await service.scanEvents();
+  assert.deepEqual(service.diagnostics, [unlistedMessage(path)]);
+  assert.equal(io.files.get(path), before);
+  assert.equal(parseEventNote(io.files.get(holder)!, holder)?.id, fresh.id);
+});
+
+test('a different title or start time is not reconnected', async () => {
+  for (const change of [{ title: 'FW: Meeting (moved)' }, { start: '2026-10-22T10:30:00+08:00' }, { allDay: true, start: '2026-10-22', end: '2026-10-23' }]) {
+    const { io, service, store, old } = resubscribed();
+    const path = await service.openEvent(old);
+    const before = io.files.get(path)!;
+    store.state.sourceCaches.old = cacheOf(renewed('old', 'uid-new', change));
+    await service.scanEvents();
+    assert.deepEqual(service.diagnostics, [unlistedMessage(path)]);
+    assert.equal(io.files.get(path), before);
+  }
+});
+
+test('a title that differs only in spacing still reconnects', async () => {
+  const { io, service, store, old } = resubscribed();
+  const path = await service.openEvent(old);
+  const fresh = renewed('old', 'uid-new', { title: ' FW:  Meeting ' });
+  store.state.sourceCaches.old = cacheOf(fresh);
+  await service.scanEvents();
+  assert.deepEqual(service.diagnostics, []);
+  assert.equal(parseEventNote(io.files.get(path)!, path)?.id, fresh.id);
+});
+
+test('notes that cannot be reconnected are reported as one problem per cause', async () => {
+  const lost = (io: FakeVault, sourceId: string) => Array.from({ length: 12 }, (_, index) => {
+    const path = `Calendar Notes/Lost ${String(index + 1).padStart(2, '0')}.md`;
+    const uid = `uid-${index}`;
+    io.files.set(path, `---\nevent_id: ${JSON.stringify(sourceEventId(sourceId, uid))}\nstart: "${start}"\nend: "${end}"\nsource: "${sourceId}"\nical_uid: "${uid}"\n---\nNotes ${index}.\n`);
+    return path;
+  });
+  const removed = resubscribed();
+  const orphans = lost(removed.io, 'gone');
+  await removed.service.scanEvents();
+  assert.deepEqual(removed.service.problems.map(problem => [problem.kind, problem.paths]), [['orphan', orphans]]);
+  assert.deepEqual(removed.service.diagnostics, [`12 Event Notes are not in any calendar: ${orphans.slice(0, 10).join(', ')} and 2 more`]);
+
+  const listed = resubscribed();
+  const unlisted = lost(listed.io, 'old');
+  await listed.service.scanEvents();
+  assert.deepEqual(listed.service.problems.map(problem => [problem.kind, problem.sourceId, problem.paths]), [['unlisted', 'old', unlisted]]);
+  assert.equal(listed.service.diagnostics.length, 1);
+  // Each note can still be released on its own.
+  await listed.service.releaseNote(unlisted[0], 'detach');
+  await listed.service.scanEvents();
+  assert.deepEqual(listed.service.problems.map(problem => problem.paths.length), [11]);
+});
+
 test('with no old link, the copy the Daily Note lists keeps the event', async () => {
   const { io, service, store, old, current, resubscribe } = resubscribed();
   const path = await service.openEvent(old);

@@ -20,6 +20,8 @@ Click an event to open its details: title, start, end and all day, and a preview
 
 If Event Notes conflict or cannot be read (for example, a duplicated note with the same `event_id`), run **Review Event Note problems** or click the toolbar's problem button: each problem lists the notes side by side, highlights what differs, recommends which to keep, and fixes it in place.
 
+An Event Note that loses its event, because its calendar was removed and added again or the feed gave its events new UIDs, is reconnected without a message to the event with the same start time and title, when exactly one event without a note matches and no other such note matches it. Notes that cannot be reconnected are listed as one problem for each cause, which you can keep as ordinary notes or move to trash together.
+
 ![Review Event Note problems showing two notes with the same event_id side by side](../images/event-note-problems.png)
 
 ## Click behavior

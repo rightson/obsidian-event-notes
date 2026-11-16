@@ -49,6 +49,43 @@ export function sortProblems(problems: EventNoteProblem[]): EventNoteProblem[] {
     || a.paths[0].localeCompare(b.paths[0]));
 }
 
+/** One message for several notes with the same cause; long lists are cut after ten paths. */
+export function summaryMessage(paths: string[], cause: string): string {
+  const shown = paths.slice(0, 10).join(', ');
+  return `${paths.length} Event Notes ${cause}: ${shown}${paths.length > 10 ? ` and ${paths.length - 10} more` : ''}`;
+}
+
+/** What identifies an event when its calendar identity is lost: all-day flag, start, and title. */
+function matchKey(item: { title: string; start: string; allDay: boolean }): string | undefined {
+  const time = item.allDay ? item.start.slice(0, 10) : Date.parse(item.start);
+  if (time === '' || Number.isNaN(time)) return undefined;
+  return JSON.stringify([item.allDay, time, item.title.normalize('NFC').trim().replace(/\s+/g, ' ')]);
+}
+
+/**
+ * Pair notes with events that have the same start and title. A pair is made
+ * only when the note matches one event and that event matches no other note;
+ * anything less certain is left for the user.
+ */
+export function matchNotesToEvents<N extends { title: string; start: string; allDay: boolean }>(
+  notes: N[], events: CalendarEvent[]): { note: N; event: CalendarEvent }[] {
+  const group = <T extends { title: string; start: string; allDay: boolean }>(items: T[]) => {
+    const groups = new Map<string, T[]>();
+    for (const item of items) {
+      const key = matchKey(item);
+      if (key) groups.set(key, [...groups.get(key) ?? [], item]);
+    }
+    return groups;
+  };
+  const byKey = group(events);
+  const pairs: { note: N; event: CalendarEvent }[] = [];
+  for (const [key, matching] of group(notes)) {
+    const candidates = byKey.get(key);
+    if (matching.length === 1 && candidates?.length === 1) pairs.push({ note: matching[0], event: candidates[0] });
+  }
+  return pairs;
+}
+
 /** A short title and a plain explanation of what happened and what each choice does. */
 export function describeProblem(problem: EventNoteProblem, calendarName: (sourceId: string) => string): { title: string; explanation: string } {
   const count = problem.paths.length;
@@ -61,10 +98,14 @@ export function describeProblem(problem: EventNoteProblem, calendarName: (source
           explanation: 'These notes have the same event_id, usually because a note was duplicated. The calendar cannot tell which one is the event, so none of them is shown. Choose the note to keep; the others stop being Event Notes.' };
     case 'unlisted': {
       const source = problem.sourceId;
+      if (count > 1) return { title: source ? `${count} notes not in calendar “${calendarName(source)}”` : `${count} notes not in their calendar`,
+        explanation: 'The calendar these notes came from no longer lists their events, and no event in a current calendar has the same start time and title as exactly one of them. The events may have been deleted or moved. If the calendar was only out of date, refresh it; otherwise keep these notes as ordinary notes or move them to trash. To decide note by note, open a note and edit it there.' };
       return { title: source ? `Not in calendar “${calendarName(source)}”` : 'Not in its calendar',
         explanation: 'The calendar this note came from no longer lists its event. The event may have been deleted or moved, or the note’s event_id, ical_uid or recurrence_id was edited. If the calendar was only out of date, refresh it; otherwise keep the note as an ordinary note or move it to trash.' };
     }
     case 'orphan':
+      if (count > 1) return { title: `${count} notes left by a removed calendar`,
+        explanation: 'These notes were created by a subscription that was removed. No current calendar lists their events, and no event in a current calendar has the same start time and title as exactly one of them. Keep these notes as ordinary notes or move them to trash. To decide note by note, open a note and edit it there.' };
       return problem.candidates?.length
         ? { title: 'Left by a removed calendar; more than one calendar matches',
           explanation: 'This note was created by a subscription that was removed. More than one current calendar lists the same event, so choose which one the note belongs to.' }
@@ -195,8 +236,10 @@ export function calendarVisibility(problem: EventNoteProblem): string {
     case 'duplicate': return problem.holder
       ? 'Shown on the calendar from the note that holds it. The copies are not used.'
       : 'Not shown on the calendar until one note is kept.';
-    case 'unlisted': return 'Not shown on the calendar: its calendar no longer lists it.';
-    case 'orphan': return 'Not shown on the calendar: its calendar subscription was removed.';
+    case 'unlisted': return problem.paths.length > 1 ? 'Not shown on the calendar: their calendar no longer lists them.'
+      : 'Not shown on the calendar: its calendar no longer lists it.';
+    case 'orphan': return problem.paths.length > 1 ? 'Not shown on the calendar: their calendar subscription was removed.'
+      : 'Not shown on the calendar: its calendar subscription was removed.';
     case 'invalid': return problem.lastValid
       ? 'Shown on the calendar from the last valid version of the note, until the plugin reloads.'
       : 'Not shown from this note. An imported event still appears with its calendar’s times.';
