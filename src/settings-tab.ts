@@ -192,7 +192,7 @@ export class CalendarNoteSettingTab extends PluginSettingTab {
     const count = this.plugin.getVisibleRange()
       ? this.plugin.events.filter(event => event.sourceId === id && event.status !== 'cancelled' && event.status !== 'removed').length
       : undefined;
-    element.setText(subscriptionStatus(source, this.plugin.store.state.sourceCaches[id], count));
+    element.setText(subscriptionStatus(source, this.plugin.store.state.sourceCaches[id], count, this.plugin.subscriptions?.getSkipped(id).length));
   }
 
   /** A read-only row whose description follows the settings. */
@@ -368,6 +368,9 @@ export class CalendarNoteSettingTab extends PluginSettingTab {
         const element = setting.descEl;
         this.statusElements.set(id, element);
         this.showStatus(id, element);
+        setting.addButton(button => button.setButtonText('Import problems…')
+          .setTooltip('See why a refresh failed and which events were skipped')
+          .onClick(() => { this.plugin.showImportProblems(); }));
         // A removed row's cleanup runs after its replacement rendered, possibly for this same id.
         return () => { if (this.statusElements.get(id) === element) this.statusElements.delete(id); };
       }),

@@ -103,7 +103,7 @@ test('the tracker shows the running step, then a success that can close by itsel
   assert.ok(view.fraction > 0.5 && view.fraction < 1);
   tracker.handle({ type: 'outcome', outcome: { sourceId: 'b', name: 'Work', status: 'updated' } });
   assert.deepEqual(tracker.finish('2 of 2 calendars refreshed.'), {
-    state: 'done', title: '2 of 2 calendars refreshed.', detail: '', fraction: 1, failures: [],
+    state: 'done', title: '2 of 2 calendars refreshed.', detail: '', fraction: 1, failures: [], skipped: 0,
   });
 });
 
@@ -146,4 +146,14 @@ test('a settings edit hands its refresh options to the save that applies it', as
   await queue.update(next => { next.sources[0].enabled = true; }, undefined, { forceSources: ['a'] });
   await queue.update(next => { next.sources[0].name = 'Renamed'; });
   assert.deepEqual(seen, ['a', undefined]);
+});
+
+test('a refresh that skipped events succeeds and says how many were skipped', () => {
+  const tracker = new RefreshTracker(titles);
+  tracker.handle({ type: 'outcome', outcome: { sourceId: 'a', name: 'Home', status: 'updated', skipped: 2 } });
+  tracker.handle({ type: 'outcome', outcome: { sourceId: 'b', name: 'Work', status: 'unchanged', skipped: 1 } });
+  const view = tracker.finish('2 of 2 calendars refreshed.');
+  assert.equal(view.state, 'done');
+  assert.equal(view.skipped, 3);
+  assert.equal(view.detail, '3 events have invalid data and were skipped.');
 });

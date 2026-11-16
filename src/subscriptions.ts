@@ -1,6 +1,7 @@
 import { ICalError, ICalParser, intersectsRange, type CalendarRange } from "./ical";
 import { emptySourceCache, safeSourceError, safeStoredSourceError, type SourceCache, type SourceErrorKind } from "./history";
 import type { ICalErrorCode } from "./ical-errors";
+import type { SkippedReport } from "./import-problems";
 import type { CalendarSource, CalendarEvent } from "./types";
 import type { CalendarStore } from "./store";
 import type { SourceSyncService } from "./sync";
@@ -87,6 +88,8 @@ export class SubscriptionService {
   private refreshQueue: Promise<unknown> = Promise.resolve();
   private generation = 0;
   private disposed = false;
+  /** Feed content: kept in memory only, and rebuilt whenever a feed is read. */
+  private readonly skipped = new Map<string, SkippedReport[]>();
 
   constructor(
     public readonly store: CalendarStore,
@@ -100,6 +103,33 @@ export class SubscriptionService {
     const prefix = `ical|${sourceId.length}:${sourceId}|`;
     const linked = Object.keys(this.store.state.noteLinks).filter(id => id.startsWith(prefix));
     return new Set([...accepted, ...linked]);
+  }
+
+  /**
+   * Read a feed, leaving out the events whose own data is invalid. An event
+   * that was valid before keeps its last accepted version, so one bad update
+   * neither removes it from the calendar nor flags its Event Note.
+   */
+  private read(raw: string, source: CalendarSource, range: CalendarRange): CalendarEvent[] {
+    const parsed = this.parser.parse(raw, source.id, range, this.store.state.settings.timeZone, this.trackedIds(source.id));
+    const events = [...parsed.events];
+    const present = new Set(events.map(event => event.id));
+    const accepted = Object.values(this.store.state.sourceCaches[source.id]?.accepted ?? {}).map(item => item.event);
+    const kept = new Set<string>();
+    const invalid = new Set(parsed.skipped.map(item => item.uid).filter(uid => uid !== undefined));
+    for (const event of accepted) {
+      if (!invalid.has(event.uid) || present.has(event.id)) continue;
+      events.push(event);
+      if (event.status !== "removed") kept.add(event.uid);
+    }
+    this.skipped.set(source.id, parsed.skipped.map(item => ({ ...item, kept: item.uid !== undefined && kept.has(item.uid) })));
+    return events;
+  }
+
+  /** The events the latest read of each enabled subscription left out. */
+  getSkipped(sourceId: string): SkippedReport[] {
+    const source = this.store.state.settings.sources.find(item => item.id === sourceId);
+    return source?.enabled && source.url.trim() ? this.skipped.get(sourceId) ?? [] : [];
   }
 
   private guard(source: CalendarSource): SourceGuard {
@@ -131,7 +161,7 @@ export class SubscriptionService {
           const fingerprint = await urlFingerprint(guard.normalizedUrl);
           if (!this.isCurrent(guard) || cache.urlFingerprint !== fingerprint) continue;
           stage = "parse";
-          const events = this.parser.parse(cache.raw, source.id, range, this.store.state.settings.timeZone, this.trackedIds(source.id));
+          const events = this.read(cache.raw, source, range);
           if (!this.isCurrent(guard)) continue;
           stage = "sync";
           await this.sync.accept(source, events, range, state => this.isCurrent(guard, state));
@@ -205,7 +235,7 @@ export class SubscriptionService {
   }
 
   private async refreshSource(source: CalendarSource, range: CalendarRange, force: boolean,
-    report: (step: CalendarStep) => void): Promise<Pick<SourceRefreshOutcome, "status" | "step" | "error">> {
+    report: (step: CalendarStep) => void): Promise<Pick<SourceRefreshOutcome, "status" | "step" | "error" | "skipped">> {
     const guard = this.guard(source);
     if (!guard.configuredUrl || !this.isCurrent(guard)) return { status: "cancelled" };
     let stage: FailureStage = "prepare";
@@ -247,7 +277,8 @@ export class SubscriptionService {
       const bodyFailure = unchanged ? undefined : responseBodyFailure(text, response.headers);
       if (bodyFailure) throw bodyFailure;
       enter("parse");
-      const events = this.parser.parse(text, source.id, range, this.store.state.settings.timeZone, this.trackedIds(source.id));
+      const events = this.read(text, source, range);
+      const skipped = this.skipped.get(source.id)?.length ?? 0;
       if (!this.isCurrent(guard)) return { status: "cancelled" };
       enter("sync");
       await this.sync.accept(source, events, range, state => this.isCurrent(guard, state));
@@ -269,7 +300,7 @@ export class SubscriptionService {
         target.retryFingerprint = undefined;
         target.error = undefined;
       });
-      return { status: unchanged ? "unchanged" : "updated" };
+      return { status: unchanged ? "unchanged" : "updated", ...(skipped ? { skipped } : {}) };
     } catch (error) {
       const failure = failureFor(error, stage);
       await this.fail(guard, failure.kind, at, fingerprint, failure.detail);

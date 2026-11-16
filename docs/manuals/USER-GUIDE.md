@@ -73,6 +73,12 @@ The refresh icon, the **Refresh calendars** command, and turning a subscription 
 
 When everything succeeds the notice closes by itself. When a step fails it stays until you click it, and names the calendar, the step, and the reason, for example *Work: failed at step 2 of 6, “Download the feed”. The calendar server returned HTTP 404.* The reasons are fixed messages; the notice never shows a feed URL or feed content. Refreshes that run in the background (on the refresh interval, or when the window regains focus) stay silent and report failures in the calendar's banner and in settings.
 
+### Calendar import problems
+
+One event with invalid data (for example an end that is not after its start, an unknown time zone, or a line that is not valid iCalendar) no longer stops its calendar from refreshing. That event, or its whole repeating series, is skipped and every other event is imported. An event that was valid before keeps its last valid version in the calendar.
+
+When events were skipped, the refresh notice stays open and says how many, and the calendar's banner and the subscription's **Status** in settings say the same. Click the notice, the banner's **Show details**, or **Import problems…** in settings, or run **Show calendar import problems**, to see for each calendar why a refresh failed and, for each skipped event, its title, the problem, its start and end as written in the feed, and its UID. **Copy as text** copies the list, for example to send to the calendar's owner. The list is kept in memory only and is rebuilt at each refresh.
+
 Turning a subscription on, or using the refresh icon, fetches the feed immediately. After a failure, background refreshes wait before trying again (from one minute up to an hour), so use either to retry at once.
 
 ## Holiday calendars

@@ -80,8 +80,8 @@ test('a failed cache write does not mark the fetched feed successful', async () 
 });
 
 test('an unavailable status store surfaces the original safe reason', async () => {
-  const invalidDate = valid.replace('20261022T100000Z', 'bad');
-  const { service, store } = harness(async () => ({ status: 200, text: invalidDate }));
+  const unterminated = valid.replace('END:VEVENT\r\n', '');
+  const { service, store } = harness(async () => ({ status: 200, text: unterminated }));
   store.commit = async () => { throw new Error('private URL and raw persistence detail'); };
   await assert.rejects(service.refresh(range, { force: true }), error => {
     assert.ok(error instanceof Error);
@@ -92,8 +92,8 @@ test('an unavailable status store surfaces the original safe reason', async () =
 });
 
 test('raw parser exceptions, typed parser reasons, and cache reparses stay in parser stage', async () => {
-  const invalidDate = valid.replace('20261022T100000Z', 'bad');
-  const malformed = harness(async () => ({ status: 200, text: invalidDate }));
+  const unterminated = valid.replace('END:VEVENT\r\n', '');
+  const malformed = harness(async () => ({ status: 200, text: unterminated }));
   await malformed.service.refresh(range, { force: true });
   assert.equal(malformed.state.sourceCaches.feed.error, safeSourceError('parse', 'invalid-syntax'));
 

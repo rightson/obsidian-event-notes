@@ -17,7 +17,8 @@ export class RefreshNotice {
   private readonly failuresEl: HTMLElement;
   private readonly hintEl: HTMLElement;
 
-  constructor(titles: ProgressTitles, only?: string) {
+  /** `showSkipped` opens the list of skipped events; the notice offers it when a refresh skipped any. */
+  constructor(titles: ProgressTitles, only?: string, private readonly showSkipped?: () => void) {
     this.tracker = new RefreshTracker(titles, only);
     const root = this.notice.messageEl;
     root.empty();
@@ -30,11 +31,16 @@ export class RefreshNotice {
     this.detailEl = root.createDiv({ cls: 'cn-refresh-detail' });
     this.failuresEl = root.createEl('ul', { cls: 'cn-refresh-failures' });
     this.hintEl = root.createDiv({ cls: 'cn-refresh-detail', text: 'Click to dismiss.' });
+    root.addEventListener('click', () => { if (this.offersSkipped) this.showSkipped?.(); });
     this.show(this.tracker.current());
   }
 
+  private offersSkipped = false;
+
   private show(view: ProgressView | undefined): void {
     if (!view) return;
+    this.offersSkipped = view.state !== 'running' && view.skipped > 0 && !!this.showSkipped;
+    this.hintEl.setText(this.offersSkipped ? 'Click to see what was skipped.' : 'Click to dismiss.');
     const root = this.notice.messageEl;
     root.toggleClass('is-failed', view.state === 'failed');
     root.toggleClass('is-done', view.state === 'done');
@@ -48,7 +54,8 @@ export class RefreshNotice {
     this.failuresEl.empty();
     for (const failure of view.failures) this.failuresEl.createEl('li', { text: failure });
     this.failuresEl.hidden = !view.failures.length;
-    this.hintEl.hidden = view.state !== 'failed';
+    root.toggleClass('is-warning', view.state === 'done' && view.skipped > 0);
+    this.hintEl.hidden = view.state !== 'failed' && !this.offersSkipped;
   }
 
   start(step: 'settings' | 'scan'): void { this.show(this.tracker.start(step)); }
@@ -59,7 +66,8 @@ export class RefreshNotice {
   finish(summary: string, failedDetail = ''): void {
     const view = this.tracker.finish(summary, failedDetail);
     this.show(view);
-    if (view.state === 'done') window.setTimeout(() => { this.notice.hide(); }, DONE_MS);
+    // A refresh that skipped events stays until it is clicked, like a failure.
+    if (view.state === 'done' && !view.skipped) window.setTimeout(() => { this.notice.hide(); }, DONE_MS);
   }
 
   fail(error: unknown): void { this.show(this.tracker.fail(error)); }

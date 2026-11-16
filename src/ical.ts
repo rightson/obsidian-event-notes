@@ -3,7 +3,8 @@ import moment from "moment-timezone";
 import type { CalendarEvent } from "./types";
 import { ICalError } from "./ical-errors";
 export { ICalError } from "./ical-errors";
-export type { ICalErrorCode } from "./ical-errors";
+export type { ICalErrorCode, SkippedEvent } from "./ical-errors";
+import type { ICalErrorCode, SkippedEvent } from "./ical-errors";
 
 export interface CalendarRange {
   start: string;
@@ -181,17 +182,108 @@ function normalizePeriodDates(component: InstanceType<typeof ICAL.Component>, ba
 
 type IComponent = InstanceType<typeof ICAL.Component>;
 interface EventGroup { master?: IComponent; exceptions: IComponent[] }
+/** Receives each event left out; without one, the first invalid event fails the feed. */
+type OnSkip = (skipped: SkippedEvent) => void;
+/** The component being read, so a failure can name the event it belongs to. */
+interface Cursor { component: IComponent }
+
+function describeTime(component: IComponent, key: string): string | undefined {
+  const property = component.getFirstProperty(key);
+  if (!property) return undefined;
+  try {
+    const zone = propertyZone(property);
+    return `${String(property.getFirstValue())}${zone ? ` (${zone})` : ""}`;
+  } catch { return "not a valid date or time"; }
+}
+
+function describeSkipped(component: IComponent, code: ICalErrorCode): SkippedEvent {
+  const text = (key: string): string | undefined => {
+    try {
+      const value = component.getFirstPropertyValue(key);
+      return value == null || value === "" ? undefined : String(value);
+    } catch { return undefined; }
+  };
+  const duration = text("duration");
+  const fields: SkippedEvent = {
+    code, uid: text("uid"), title: text("summary"), start: describeTime(component, "dtstart"),
+    end: describeTime(component, "dtend") ?? (duration ? `duration ${duration}` : undefined),
+    recurrenceId: describeTime(component, "recurrence-id"),
+  };
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) as unknown as SkippedEvent;
+}
+
+const errorCode = (error: unknown): ICalErrorCode => error instanceof ICalError ? error.code : "invalid-syntax";
+
+function parseCalendar(raw: string): IComponent {
+  const parsed: unknown = ICAL.parse(raw);
+  if (!Array.isArray(parsed)) throw new Error("Not a calendar component.");
+  const calendar = new ICAL.Component(parsed);
+  if (calendar.name !== "vcalendar") throw new Error("Not a calendar.");
+  return calendar;
+}
+
+/** The first value of a property in an event that could not be parsed. */
+function rawValue(lines: readonly string[], name: string, keepParameters = false): string | undefined {
+  const pattern = new RegExp(`^${name}([;:])`, "i");
+  for (const line of lines) {
+    if (/^BEGIN:/i.test(line) && !/^BEGIN:VEVENT$/i.test(line)) break;
+    if (!pattern.test(line)) continue;
+    const rest = line.slice(name.length);
+    const value = keepParameters ? rest.replace(/^[;:]/, "") : rest.slice(rest.indexOf(":") + 1);
+    const plain = value.replace(/\\n/gi, " ").replace(/\\([,;\\])/g, "$1").trim();
+    return plain ? plain.slice(0, 200) : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * ical.js rejects a whole calendar for one malformed line. Parse the calendar
+ * without its events, then each event by itself, so only the broken ones are lost.
+ */
+function salvageCalendar(raw: string, onSkip: OnSkip): IComponent {
+  const invalid = () => new ICalError("parse", "Invalid iCalendar syntax.", "invalid-syntax");
+  const shell: string[] = [];
+  const blocks: string[][] = [];
+  let block: string[] | undefined;
+  for (const line of raw.split("\r\n")) {
+    if (!block && /^BEGIN:VEVENT$/i.test(line)) block = [];
+    if (!block) { shell.push(line); continue; }
+    block.push(line);
+    if (/^END:VEVENT$/i.test(line)) { blocks.push(block); block = undefined; }
+  }
+  if (block) throw invalid();
+  let calendar: IComponent;
+  try { calendar = parseCalendar(shell.join("\r\n")); } catch { throw invalid(); }
+  for (const lines of blocks) {
+    try {
+      const event = parseCalendar(["BEGIN:VCALENDAR", ...lines, "END:VCALENDAR", ""].join("\r\n")).getFirstSubcomponent("vevent");
+      if (!event) throw invalid();
+      calendar.addSubcomponent(event);
+    } catch {
+      const unfolded: string[] = [];
+      for (const line of lines) {
+        if (/^[ \t]/.test(line) && unfolded.length) unfolded[unfolded.length - 1] += line.slice(1);
+        else unfolded.push(line);
+      }
+      const fields: SkippedEvent = {
+        code: "invalid-syntax", uid: rawValue(unfolded, "UID"), title: rawValue(unfolded, "SUMMARY"),
+        start: rawValue(unfolded, "DTSTART", true), end: rawValue(unfolded, "DTEND", true),
+        recurrenceId: rawValue(unfolded, "RECURRENCE-ID", true),
+      };
+      onSkip(Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)) as unknown as SkippedEvent);
+    }
+  }
+  return calendar;
+}
 
 /** Registers embedded zones and returns the calendar's VEVENTs. */
-function readCalendar(raw: string, embedded: Set<string>): IComponent[] {
+function readCalendar(raw: string, embedded: Set<string>, onSkip?: OnSkip): IComponent[] {
   let calendar: IComponent;
   try {
-    const parsed: unknown = ICAL.parse(raw);
-    if (!Array.isArray(parsed)) throw new Error("Not a calendar component.");
-    calendar = new ICAL.Component(parsed);
-    if (calendar.name !== "vcalendar") throw new Error("Not a calendar.");
+    calendar = parseCalendar(raw);
   } catch {
-    throw new ICalError("parse", "Invalid iCalendar syntax.", "invalid-syntax");
+    if (!onSkip) throw new ICalError("parse", "Invalid iCalendar syntax.", "invalid-syntax");
+    calendar = salvageCalendar(raw, onSkip);
   }
 
   // iTIP CANCEL is a change message, not a replacement subscription snapshot.
@@ -209,27 +301,39 @@ function readCalendar(raw: string, embedded: Set<string>): IComponent[] {
 }
 
 /** A stream may split a series across calendar objects, so group by UID over the whole feed. */
-function groupByUid(components: IComponent[], embedded: Set<string>): Map<string, EventGroup> {
+function groupByUid(components: IComponent[], embedded: Set<string>, onSkip?: OnSkip): Map<string, EventGroup> {
   const byUid = new Map<string, EventGroup>();
+  // One invalid component makes its whole series unreliable, so the series is left out once.
+  const invalid = new Set<string>();
   for (const component of components) {
     const uid = component.getFirstPropertyValue("uid");
-    if (typeof uid !== "string" || !uid) throw new ICalError("parse", "VEVENT lacks UID.", "missing-event-uid");
-    for (const key of ["dtstart", "dtend", "recurrence-id", "rdate", "exdate"]) {
-      for (const prop of component.getAllProperties(key)) {
-        const zone = propertyZone(prop);
-        if (zone && zone !== "UTC" && !embedded.has(zone) && !moment.tz.zone(zone)) {
-          throw new ICalError("zone", "Unknown iCalendar time zone.", "invalid-time-zone");
+    try {
+      if (typeof uid !== "string" || !uid) throw new ICalError("parse", "VEVENT lacks UID.", "missing-event-uid");
+      for (const key of ["dtstart", "dtend", "recurrence-id", "rdate", "exdate"]) {
+        for (const prop of component.getAllProperties(key)) {
+          const zone = propertyZone(prop);
+          if (zone && zone !== "UTC" && !embedded.has(zone) && !moment.tz.zone(zone)) {
+            throw new ICalError("zone", "Unknown iCalendar time zone.", "invalid-time-zone");
+          }
         }
       }
+      const group = byUid.get(uid) ?? { exceptions: [] };
+      if (component.hasProperty("recurrence-id")) group.exceptions.push(component);
+      else {
+        if (group.master) throw new ICalError("parse", "Ambiguous duplicate UID.", "duplicate-event-uid");
+        group.master = component;
+      }
+      byUid.set(uid, group);
+    } catch (error) {
+      if (!onSkip) throw error;
+      if (typeof uid === "string" && uid) {
+        if (invalid.has(uid)) continue;
+        invalid.add(uid);
+      }
+      onSkip(describeSkipped(component, errorCode(error)));
     }
-    const group = byUid.get(uid) ?? { exceptions: [] };
-    if (component.hasProperty("recurrence-id")) group.exceptions.push(component);
-    else {
-      if (group.master) throw new ICalError("parse", "Ambiguous duplicate UID.", "duplicate-event-uid");
-      group.master = component;
-    }
-    byUid.set(uid, group);
   }
+  for (const uid of invalid) byUid.delete(uid);
   return byUid;
 }
 
@@ -246,11 +350,13 @@ function addOrphanOccurrences(
   embedded: Set<string>,
   trackedIds: ReadonlySet<string>,
   result: Map<string, CalendarEvent>,
+  cursor: Cursor,
 ): void {
   const from = Date.parse(range.start);
   const to = Date.parse(range.end);
   const anchors = new Set<string>();
   for (const component of exceptions) {
+    cursor.component = component;
     const exception = new ICAL.Event(component);
     const recProp = component.getFirstProperty("recurrence-id");
     const recZone = propertyZone(recProp);
@@ -289,116 +395,146 @@ function expandGroups(
   displayZone: string,
   embedded: Set<string>,
   trackedIds: ReadonlySet<string>,
+  onSkip?: OnSkip,
 ): CalendarEvent[] {
-  const from = Date.parse(range.start);
-  const to = Date.parse(range.end);
   const result = new Map<string, CalendarEvent>();
   for (const [uid, group] of byUid) {
-    if (!group.master) {
-      addOrphanOccurrences(uid, group.exceptions, sourceId, range, displayZone, embedded, trackedIds, result);
+    const cursor: Cursor = { component: group.master ?? group.exceptions[0] };
+    // A series is added whole or not at all, so a failure never leaves half of it behind.
+    const found = new Map<string, CalendarEvent>();
+    try {
+      expandGroup(uid, group, sourceId, range, displayZone, embedded, trackedIds, found, cursor);
+    } catch (error) {
+      if (!onSkip) throw error;
+      onSkip(describeSkipped(cursor.component, errorCode(error)));
       continue;
     }
-    if (!group.master.hasProperty("dtstart")) {
-      throw new ICalError("parse", "VEVENT lacks DTSTART.", "missing-event-start");
-    }
-    const baseZone = propertyZone(group.master.getFirstProperty("dtstart"));
-    const periods = normalizePeriodDates(group.master, baseZone, displayZone, embedded);
-    // ical.js's RDATE-only iterator omits DTSTART unless it is also an RDATE.
-    // DTSTART is part of the recurrence set even without an RRULE.
-    if (group.master.hasProperty("rdate") && !group.master.hasProperty("rrule")) {
-      const start = group.master.getFirstPropertyValue("dtstart") as ITime;
-      const startAnchor = anchor(start, baseZone, displayZone, embedded);
-      const hasStart = group.master.getAllProperties("rdate").some(property =>
-        property.getValues().some(value => anchor(value as ITime,
-          propertyZone(property) ?? baseZone, displayZone, embedded) === startAnchor));
-      if (!hasStart) {
-        const property = new ICAL.Property("rdate");
-        if (baseZone) property.setParameter("tzid", baseZone);
-        property.setValue(start);
-        group.master.addProperty(property);
-      }
-    }
-    const master = new ICAL.Event(group.master, { exceptions: group.exceptions, strictExceptions: true });
-    const baseEndZone = propertyZone(master.component.getFirstProperty("dtend")) ?? baseZone;
-    const baseFields = intervalFor(master.startDate, master.endDate, baseZone, baseEndZone, displayZone, embedded,
-      master.component.hasProperty("dtend"));
-    const exceptionAnchors = new Set<string>();
-    const exceptionByAnchor = new Map<string, IEvent>();
-    for (const component of group.exceptions) {
-      const exception = new ICAL.Event(component);
-      const rec = anchor(exception.recurrenceId,
-        propertyZone(component.getFirstProperty("recurrence-id")) ?? baseZone, displayZone, embedded);
-      if (exceptionAnchors.has(rec)) throw new ICalError("parse", "Ambiguous duplicate recurrence exception.", "duplicate-recurrence");
-      exceptionAnchors.add(rec);
-      exceptionByAnchor.set(rec, exception);
-    }
-    if (!master.isRecurring() && group.exceptions.length === 0) {
-      const event = eventFields(master, sourceId, undefined, baseFields);
-      if (intersectsRange(event, range) || trackedIds.has(event.id)) result.set(event.id, event);
-      continue;
-    }
-
-    const iterator = master.iterator();
-    const cutoff = Math.max(to, trackedCutoff(trackedIds, sourceId, uid, displayZone));
-    let count = 0;
-    let occurrence: ITime | null;
-    while ((occurrence = iterator.next())) {
-      if (++count > MAX_OCCURRENCES) throw new ICalError("limit", "Recurrence expansion limit exceeded.", "recurrence-limit");
-      const recurrenceId = anchor(occurrence, baseZone, displayZone, embedded);
-      const id = sourceEventId(sourceId, uid, recurrenceId);
-      const bareCancellation = exceptionByAnchor.get(recurrenceId);
-      const details = bareCancellation && !bareCancellation.component.hasProperty("dtstart")
-        ? { item: bareCancellation, startDate: occurrence, endDate: undefined }
-        : master.getOccurrenceDetails(occurrence);
-      const item = details.item;
-      const startZone = propertyZone(item.component.getFirstProperty("dtstart")) ?? baseZone;
-      const endZone = propertyZone(item.component.getFirstProperty("dtend")) ?? startZone;
-      const eventStart = details.startDate ?? occurrence;
-      const inheritedEnd = eventStart.clone();
-      inheritedEnd.addDuration(master.duration);
-      const period = item === master ? periods.get(recurrenceId) : undefined;
-      const eventEnd = period?.end ?? (!item.component.hasProperty("dtend") && !item.component.hasProperty("duration")
-        ? inheritedEnd : details.endDate ?? inheritedEnd);
-      const fields = intervalFor(eventStart, eventEnd, startZone, period?.zone ?? endZone, displayZone, embedded,
-        !!period || item.component.hasProperty("dtend"));
-      const event = eventFields(item, sourceId, recurrenceId, fields, master);
-      const anchorMs = timeToMillis(occurrence, baseZone, displayZone, embedded);
-      if (intersectsRange(event, range) || trackedIds.has(id) || (anchorMs >= from && anchorMs < to)) result.set(id, event);
-      // Exception anchors can lie beyond the visible range; they are handled below.
-      if (anchorMs > cutoff && count > 1) break;
-    }
-
-    for (const exceptionComponent of group.exceptions) {
-      const exception = new ICAL.Event(exceptionComponent);
-      const recProp = exceptionComponent.getFirstProperty("recurrence-id");
-      const recurrenceId = anchor(exception.recurrenceId, propertyZone(recProp) ?? baseZone, displayZone, embedded);
-      const id = sourceEventId(sourceId, uid, recurrenceId);
-      const eventStart = exceptionComponent.hasProperty("dtstart") ? exception.startDate : exception.recurrenceId;
-      const inheritedEnd = eventStart.clone();
-      inheritedEnd.addDuration(master.duration);
-      const eventEnd = exceptionComponent.hasProperty("dtend") || exceptionComponent.hasProperty("duration")
-        ? exception.endDate : inheritedEnd;
-      const fields = intervalFor(
-        eventStart, eventEnd,
-        propertyZone(exceptionComponent.getFirstProperty("dtstart")) ?? baseZone,
-        propertyZone(exceptionComponent.getFirstProperty("dtend")) ?? baseEndZone,
-        displayZone, embedded, exceptionComponent.hasProperty("dtend"),
-      );
-      const event = eventFields(exception, sourceId, recurrenceId, fields, master);
-      const anchorMs = timeToMillis(exception.recurrenceId,
-        propertyZone(recProp) ?? baseZone, displayZone, embedded);
-      if (intersectsRange(event, range) || trackedIds.has(id) || (anchorMs >= from && anchorMs < to)) result.set(id, event);
-    }
+    for (const [id, event] of found) result.set(id, event);
   }
   return [...result.values()];
 }
 
-export function parseICalendar(
+function expandGroup(
+  uid: string,
+  group: EventGroup,
+  sourceId: string,
+  range: CalendarRange,
+  displayZone: string,
+  embedded: Set<string>,
+  trackedIds: ReadonlySet<string>,
+  result: Map<string, CalendarEvent>,
+  cursor: Cursor,
+): void {
+  const from = Date.parse(range.start);
+  const to = Date.parse(range.end);
+  if (!group.master) {
+    addOrphanOccurrences(uid, group.exceptions, sourceId, range, displayZone, embedded, trackedIds, result, cursor);
+    return;
+  }
+  if (!group.master.hasProperty("dtstart")) {
+    throw new ICalError("parse", "VEVENT lacks DTSTART.", "missing-event-start");
+  }
+  const baseZone = propertyZone(group.master.getFirstProperty("dtstart"));
+  const periods = normalizePeriodDates(group.master, baseZone, displayZone, embedded);
+  // ical.js's RDATE-only iterator omits DTSTART unless it is also an RDATE.
+  // DTSTART is part of the recurrence set even without an RRULE.
+  if (group.master.hasProperty("rdate") && !group.master.hasProperty("rrule")) {
+    const start = group.master.getFirstPropertyValue("dtstart") as ITime;
+    const startAnchor = anchor(start, baseZone, displayZone, embedded);
+    const hasStart = group.master.getAllProperties("rdate").some(property =>
+      property.getValues().some(value => anchor(value as ITime,
+        propertyZone(property) ?? baseZone, displayZone, embedded) === startAnchor));
+    if (!hasStart) {
+      const property = new ICAL.Property("rdate");
+      if (baseZone) property.setParameter("tzid", baseZone);
+      property.setValue(start);
+      group.master.addProperty(property);
+    }
+  }
+  const master = new ICAL.Event(group.master, { exceptions: group.exceptions, strictExceptions: true });
+  const baseEndZone = propertyZone(master.component.getFirstProperty("dtend")) ?? baseZone;
+  const baseFields = intervalFor(master.startDate, master.endDate, baseZone, baseEndZone, displayZone, embedded,
+    master.component.hasProperty("dtend"));
+  const exceptionAnchors = new Set<string>();
+  const exceptionByAnchor = new Map<string, IEvent>();
+  for (const component of group.exceptions) {
+    cursor.component = component;
+    const exception = new ICAL.Event(component);
+    const rec = anchor(exception.recurrenceId,
+      propertyZone(component.getFirstProperty("recurrence-id")) ?? baseZone, displayZone, embedded);
+    if (exceptionAnchors.has(rec)) throw new ICalError("parse", "Ambiguous duplicate recurrence exception.", "duplicate-recurrence");
+    exceptionAnchors.add(rec);
+    exceptionByAnchor.set(rec, exception);
+  }
+  cursor.component = group.master;
+  if (!master.isRecurring() && group.exceptions.length === 0) {
+    const event = eventFields(master, sourceId, undefined, baseFields);
+    if (intersectsRange(event, range) || trackedIds.has(event.id)) result.set(event.id, event);
+    return;
+  }
+
+  const iterator = master.iterator();
+  const cutoff = Math.max(to, trackedCutoff(trackedIds, sourceId, uid, displayZone));
+  let count = 0;
+  let occurrence: ITime | null;
+  while ((occurrence = iterator.next())) {
+    if (++count > MAX_OCCURRENCES) throw new ICalError("limit", "Recurrence expansion limit exceeded.", "recurrence-limit");
+    const recurrenceId = anchor(occurrence, baseZone, displayZone, embedded);
+    const id = sourceEventId(sourceId, uid, recurrenceId);
+    const bareCancellation = exceptionByAnchor.get(recurrenceId);
+    const details = bareCancellation && !bareCancellation.component.hasProperty("dtstart")
+      ? { item: bareCancellation, startDate: occurrence, endDate: undefined }
+      : master.getOccurrenceDetails(occurrence);
+    const item = details.item;
+    cursor.component = item.component;
+    const startZone = propertyZone(item.component.getFirstProperty("dtstart")) ?? baseZone;
+    const endZone = propertyZone(item.component.getFirstProperty("dtend")) ?? startZone;
+    const eventStart = details.startDate ?? occurrence;
+    const inheritedEnd = eventStart.clone();
+    inheritedEnd.addDuration(master.duration);
+    const period = item === master ? periods.get(recurrenceId) : undefined;
+    const eventEnd = period?.end ?? (!item.component.hasProperty("dtend") && !item.component.hasProperty("duration")
+      ? inheritedEnd : details.endDate ?? inheritedEnd);
+    const fields = intervalFor(eventStart, eventEnd, startZone, period?.zone ?? endZone, displayZone, embedded,
+      !!period || item.component.hasProperty("dtend"));
+    const event = eventFields(item, sourceId, recurrenceId, fields, master);
+    const anchorMs = timeToMillis(occurrence, baseZone, displayZone, embedded);
+    if (intersectsRange(event, range) || trackedIds.has(id) || (anchorMs >= from && anchorMs < to)) result.set(id, event);
+    // Exception anchors can lie beyond the visible range; they are handled below.
+    if (anchorMs > cutoff && count > 1) break;
+  }
+
+  for (const exceptionComponent of group.exceptions) {
+    cursor.component = exceptionComponent;
+    const exception = new ICAL.Event(exceptionComponent);
+    const recProp = exceptionComponent.getFirstProperty("recurrence-id");
+    const recurrenceId = anchor(exception.recurrenceId, propertyZone(recProp) ?? baseZone, displayZone, embedded);
+    const id = sourceEventId(sourceId, uid, recurrenceId);
+    const eventStart = exceptionComponent.hasProperty("dtstart") ? exception.startDate : exception.recurrenceId;
+    const inheritedEnd = eventStart.clone();
+    inheritedEnd.addDuration(master.duration);
+    const eventEnd = exceptionComponent.hasProperty("dtend") || exceptionComponent.hasProperty("duration")
+      ? exception.endDate : inheritedEnd;
+    const fields = intervalFor(
+      eventStart, eventEnd,
+      propertyZone(exceptionComponent.getFirstProperty("dtstart")) ?? baseZone,
+      propertyZone(exceptionComponent.getFirstProperty("dtend")) ?? baseEndZone,
+      displayZone, embedded, exceptionComponent.hasProperty("dtend"),
+    );
+    const event = eventFields(exception, sourceId, recurrenceId, fields, master);
+    const anchorMs = timeToMillis(exception.recurrenceId,
+      propertyZone(recProp) ?? baseZone, displayZone, embedded);
+    if (intersectsRange(event, range) || trackedIds.has(id) || (anchorMs >= from && anchorMs < to)) result.set(id, event);
+  }
+}
+
+function parse(
   raw: string,
   sourceId: string,
   range: CalendarRange,
   displayZone: string,
-  trackedIds: ReadonlySet<string> = new Set(),
+  trackedIds: ReadonlySet<string>,
+  onSkip?: OnSkip,
 ): CalendarEvent[] {
   try {
     if (!sourceId || !moment.tz.zone(displayZone)) throw new ICalError("zone", "Unknown display time zone.", "invalid-time-zone");
@@ -409,8 +545,8 @@ export function parseICalendar(
     }
     if (raw.length > MAX_FEED_BYTES) throw new ICalError("limit", "iCalendar feed exceeds size limit.", "feed-too-large");
     const embedded = new Set<string>();
-    const components = splitCalendars(raw).flatMap(calendar => readCalendar(calendar, embedded));
-    const events = expandGroups(groupByUid(components, embedded), sourceId, range, displayZone, embedded, trackedIds);
+    const components = splitCalendars(raw).flatMap(calendar => readCalendar(calendar, embedded, onSkip));
+    const events = expandGroups(groupByUid(components, embedded, onSkip), sourceId, range, displayZone, embedded, trackedIds, onSkip);
     return events.sort((a, b) => Date.parse(a.start) - Date.parse(b.start) || a.id.localeCompare(b.id));
   } catch (error) {
     if (error instanceof ICalError) throw error;
@@ -418,8 +554,42 @@ export function parseICalendar(
   }
 }
 
+/** Strict: the first invalid event fails the whole feed. */
+export function parseICalendar(
+  raw: string,
+  sourceId: string,
+  range: CalendarRange,
+  displayZone: string,
+  trackedIds: ReadonlySet<string> = new Set(),
+): CalendarEvent[] {
+  return parse(raw, sourceId, range, displayZone, trackedIds);
+}
+
+export interface ParsedCalendar {
+  events: CalendarEvent[];
+  /** Events left out because their own data is invalid; every other event is in `events`. */
+  skipped: SkippedEvent[];
+}
+
+/**
+ * Tolerant: an invalid event (or repeating series) is left out and reported,
+ * and the rest of the feed is imported. Only a feed that is unreadable as a
+ * whole still throws.
+ */
+export function parseICalendarDetailed(
+  raw: string,
+  sourceId: string,
+  range: CalendarRange,
+  displayZone: string,
+  trackedIds: ReadonlySet<string> = new Set(),
+): ParsedCalendar {
+  const skipped: SkippedEvent[] = [];
+  const events = parse(raw, sourceId, range, displayZone, trackedIds, item => { skipped.push(item); });
+  return { events, skipped };
+}
+
 export class ICalParser {
-  parse(raw: string, sourceId: string, range: CalendarRange, displayZone: string, trackedIds?: ReadonlySet<string>): CalendarEvent[] {
-    return parseICalendar(raw, sourceId, range, displayZone, trackedIds);
+  parse(raw: string, sourceId: string, range: CalendarRange, displayZone: string, trackedIds?: ReadonlySet<string>): ParsedCalendar {
+    return parseICalendarDetailed(raw, sourceId, range, displayZone, trackedIds);
   }
 }

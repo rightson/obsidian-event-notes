@@ -1,3 +1,5 @@
+import { skippedLine } from './import-problems';
+
 /** The steps one subscription goes through, in order. */
 export const CALENDAR_STEPS = ['prepare', 'request', 'response', 'parse', 'sync', 'cache'] as const;
 export type CalendarStep = typeof CALENDAR_STEPS[number];
@@ -32,6 +34,8 @@ export interface SourceRefreshOutcome {
   step?: CalendarStep;
   /** A fixed, privacy-safe reason; never feed content or a URL. */
   error?: string;
+  /** Events left out because their own data is invalid; the rest were imported. */
+  skipped?: number;
 }
 
 export type RefreshEvent =
@@ -46,6 +50,8 @@ export interface ProgressView {
   fraction: number;
   /** One line per failed step. */
   failures: string[];
+  /** Events left out of calendars that did refresh; the details are in Calendar import problems. */
+  skipped: number;
 }
 
 export interface ProgressTitles {
@@ -83,16 +89,16 @@ export class RefreshTracker {
   private running(): ProgressView {
     const step = this.step;
     const calendar = this.calendar;
-    if (!step) return { state: 'running', title: this.titles.running, detail: 'Starting…', fraction: 0, failures: [] };
+    if (!step) return { state: 'running', title: this.titles.running, detail: 'Starting…', fraction: 0, failures: [], skipped: 0 };
     const ordinal = CALENDAR_STEPS.indexOf(step as CalendarStep);
     if (!calendar || ordinal < 0) {
-      return { state: 'running', title: this.titles.running, detail: `${STEP_LABELS[step]}…`, fraction: 0.05, failures: [] };
+      return { state: 'running', title: this.titles.running, detail: `${STEP_LABELS[step]}…`, fraction: 0.05, failures: [], skipped: 0 };
     }
     const position = this.only || calendar.total === 1 ? '' : ` (${calendar.index + 1} of ${calendar.total})`;
     const share = this.only ? ordinal / CALENDAR_STEPS.length
       : (calendar.index + ordinal / CALENDAR_STEPS.length) / Math.max(1, calendar.total);
     return {
-      state: 'running', title: this.titles.running, failures: [],
+      state: 'running', title: this.titles.running, failures: [], skipped: 0,
       detail: `${calendar.name}${position}: ${stepNumber(step as CalendarStep)}, ${STEP_LABELS[step]}…`,
       fraction: 0.1 + 0.9 * share,
     };
@@ -121,8 +127,16 @@ export class RefreshTracker {
   /** The run ended without throwing; subscriptions that failed still make it a failure. */
   finish(summary: string, failedDetail = ''): ProgressView {
     const failures = this.outcomes.filter(outcome => outcome.status === 'failed').map(failureLine);
-    if (failures.length) return { state: 'failed', title: this.titles.failed, detail: failedDetail, fraction: 1, failures };
-    return { state: 'done', title: summary, detail: '', fraction: 1, failures: [] };
+    const skipped = this.skippedCount();
+    const note = skipped ? skippedLine(skipped) : '';
+    if (failures.length) {
+      return { state: 'failed', title: this.titles.failed, detail: [failedDetail, note].filter(Boolean).join(' '), fraction: 1, failures, skipped };
+    }
+    return { state: 'done', title: summary, detail: note, fraction: 1, failures: [], skipped };
+  }
+
+  private skippedCount(): number {
+    return this.outcomes.reduce((sum, outcome) => sum + (outcome.skipped ?? 0), 0);
   }
 
   /** The run threw; the step it was on is the one that failed. */
@@ -135,6 +149,7 @@ export class RefreshTracker {
     else if (this.calendar && ordinal >= 0) {
       failures.push(failureLine({ sourceId: this.calendar.sourceId, name: this.calendar.name, status: 'failed', step: step as CalendarStep, error: reason }));
     } else failures.push(`Failed at “${STEP_LABELS[step]}”. ${reason}`);
-    return { state: 'failed', title: this.titles.failed, detail: '', fraction: 1, failures: [...new Set(failures)] };
+    const skipped = this.skippedCount();
+    return { state: 'failed', title: this.titles.failed, detail: skipped ? skippedLine(skipped) : '', fraction: 1, failures: [...new Set(failures)], skipped };
   }
 }

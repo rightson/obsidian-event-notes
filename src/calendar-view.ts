@@ -17,6 +17,7 @@ import { editMenuTitle, eventsAt, type PointerSpan } from './calendar-menu';
 import { mainDateClick, miniDateClick, type NotePlacement } from './calendar-click';
 import { sidebarWidthForContainer, resizeSidebarWithKeyboard, togglePanel, type CalendarPanel } from './sidebar-layout';
 import { subscriptionFailureMessage } from './subscription-settings';
+import { skippedCount, skippedLine } from './import-problems';
 import { holidayDays, showsEvent, type HolidayDay } from './holidays';
 import type { TaskEvent } from './tasks';
 
@@ -595,10 +596,16 @@ export class CalendarNoteView extends ItemView {
   }
   private updateSubscriptionFailure(): void {
     if (!this.subscriptionFailureEl) return;
-    const message = subscriptionFailureMessage(this.settings, this.plugin.store.state.sourceCaches);
+    const failure = subscriptionFailureMessage(this.settings, this.plugin.store.state.sourceCaches);
+    const skipped = skippedCount(this.plugin.importReports);
+    const message = [failure, skipped ? `${skippedLine(skipped)} Every other event was imported.` : ''].filter(Boolean).join(' ');
     this.subscriptionFailureEl.hidden = !message;
-    this.subscriptionFailureEl.setText(message ?? '');
-    this.subscriptionFailureEl.title = message ?? '';
+    this.subscriptionFailureEl.toggleClass('is-warning', !failure);
+    this.subscriptionFailureEl.setText(message ? `${message} ` : '');
+    this.subscriptionFailureEl.title = message;
+    if (!message) return;
+    const details = this.subscriptionFailureEl.createEl('a', { text: 'Show details', href: '#' });
+    details.addEventListener('click', event => { event.preventDefault(); this.plugin.showImportProblems(); });
   }
   refresh(): void {
     if (!this.calendar) return;
