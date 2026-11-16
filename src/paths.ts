@@ -154,10 +154,24 @@ export function followPath(current: string, was: string, next: string): string |
   return folder ? `${folder}/${name}` : name;
 }
 
+/**
+ * While the folder wizard has changed the format but not yet moved every note
+ * (`dailyFormerFormat` is set), a day whose Daily Note still sits at the earlier
+ * path keeps that path. Otherwise a scan would start a second Daily Note for the
+ * day at the new path, and the wizard could no longer move the first one there.
+ */
 export function dailyNotePath(date: string | Date, app: App, settings: PluginSettings): string {
   const provider = resolveDailySettings(app, settings);
-  return dailyNotePathIn(provider.folder, provider.format, date,
-    { locale: settings.locale, weekMode: settings.weekMode, weekStart: settings.weekStart }, settings.timeZone);
+  const rules: WeekRules = { locale: settings.locale, weekMode: settings.weekMode, weekStart: settings.weekStart };
+  const path = dailyNotePathIn(provider.folder, provider.format, date, rules, settings.timeZone);
+  const former = typeof settings.dailyFormerFormat === 'string' ? settings.dailyFormerFormat.trim() : '';
+  if (!former || former === provider.format.trim()) return path;
+  const exists = (candidate: string): boolean => !!app.vault?.getAbstractFileByPath?.(candidate);
+  try {
+    const earlier = dailyNotePathIn(provider.folder, former, date, rules, settings.timeZone);
+    if (pathKey(earlier) !== pathKey(path) && exists(earlier) && !exists(path)) return earlier;
+  } catch { /* an earlier format that names no path keeps nothing back */ }
+  return path;
 }
 
 /** The Daily Note path a base folder and date format give, whether or not they are the ones in use. */

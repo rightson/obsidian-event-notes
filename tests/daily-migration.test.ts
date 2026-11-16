@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { checkDailyFormat, cleanupCandidates, dailyDateOf, dailyPathFor, DEFAULT_TARGET_FORMAT, findDailyNotes, migrationDefaults,
-  planMigration, retargetState, runMigration, type FormatContext, type MigrationAdapter, type PlannedMove } from '../src/daily-migration';
+  planMigration, retargetState, runMigration, WriteHold, type FormatContext, type MigrationAdapter, type PlannedMove } from '../src/daily-migration';
 import { eventNotePathIn } from '../src/paths';
 import { DEFAULT_SETTINGS } from '../src/settings';
 import type { CalendarEvent } from '../src/types';
@@ -318,4 +318,52 @@ test('a cancelled move stops between files and a second run finishes it', async 
   // Every quarter folder is gone; the base folder and the new folders stay.
   assert.deepEqual([...vault.folders].sort(), ['Journal', 'Journal/2026', 'Journal/2026/11', 'Journal/2026/11/11-16', 'Journal/2026/11/11-17', 'Journal/2026/11/11-18']);
   assert.equal((await runMigration(plan([...vault.files], QUARTERS, DEFAULT_TARGET_FORMAT).moves, 'Journal', vault.adapter)).moved.length, 0);
+});
+
+test('a rerun collects what a moved day left behind in its old folder', async () => {
+  // Nov 16 moved in an earlier run, but its picture did not.
+  const files = ['Journal/2026/11/11-16/November 16.md', 'Journal/2026/Q4/11-16/img.png', 'Journal/2026/Q4/11-16/files/scan.pdf',
+    'Journal/2026/Q4/readme.txt'];
+  const again = plan(files, QUARTERS, DEFAULT_TARGET_FORMAT);
+  assert.equal(again.found, 0);
+  assert.equal(again.extras, 2);
+  assert.deepEqual(again.moves.map(move => [move.kind, move.from, move.to]), [
+    ['extra', 'Journal/2026/Q4/11-16/files/scan.pdf', 'Journal/2026/11/11-16/files/scan.pdf'],
+    ['extra', 'Journal/2026/Q4/11-16/img.png', 'Journal/2026/11/11-16/img.png'],
+  ]);
+  assert.deepEqual(again.conflicts, []);
+  // The emptied old folders are removed although no Daily Note moved in this run.
+  const vault = fakeVault(files);
+  const result = await runMigration(again.moves, 'Journal', vault.adapter);
+  assert.equal(result.moved.length, 2);
+  assert.deepEqual(result.removedFolders, ['Journal/2026/Q4/11-16/files', 'Journal/2026/Q4/11-16']);
+  assert.ok(vault.files.has('Journal/2026/Q4/readme.txt'));
+  // Left alone when asked, when the old Daily Note is still there, and when the old format had no folder per day.
+  assert.deepEqual(plan(files, QUARTERS, DEFAULT_TARGET_FORMAT, { options: { moveExtras: false } }).left,
+    ['Journal/2026/Q4/11-16/files/scan.pdf', 'Journal/2026/Q4/11-16/img.png']);
+  const both = plan([...files, 'Journal/2026/Q4/11-16/Nov 16.md'], QUARTERS, DEFAULT_TARGET_FORMAT);
+  assert.deepEqual(both.moves, []);
+  assert.deepEqual(both.conflicts.map(conflict => conflict.reason), ['target-exists']);
+  assert.deepEqual(plan(['Journal/2026/11/11-16/November 16.md', 'Journal/img.png'], 'YYYY-MM-DD', DEFAULT_TARGET_FORMAT).moves, []);
+});
+
+test('a hold on background writes waits for work already running and resumes after the last release', async () => {
+  let finishScan = (): void => undefined;
+  const scan = new Promise<void>(resolve => { finishScan = resolve; });
+  let resumed = 0;
+  const hold = new WriteHold(() => [scan, undefined, Promise.reject(new Error('a failed move'))], () => { resumed++; });
+  let taken = false;
+  const first = hold.take().then(release => { taken = true; return release; });
+  assert.equal(hold.active, true);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(taken, false);
+  finishScan();
+  const release = await first;
+  const other = await hold.take();
+  release(); release();
+  assert.equal(hold.active, true);
+  assert.equal(resumed, 0);
+  other();
+  assert.equal(hold.active, false);
+  assert.equal(resumed, 1);
 });

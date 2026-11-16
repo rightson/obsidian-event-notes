@@ -10,6 +10,7 @@ import { emptySourceCache } from '../src/history';
 import { sourceEventId } from '../src/ical';
 import type { CalendarEvent } from '../src/types';
 import { SourceSyncService } from '../src/sync';
+import { retargetState } from '../src/daily-migration';
 
 class FakeVault implements StoreIO {
   files = new Map<string, string>();
@@ -1287,4 +1288,29 @@ test('a problem note reports its event, its Daily entry and the notes that link 
   ]);
   assert.equal(facts.listed, true);
   assert.equal(service.problems[0].kind, 'orphan');
+});
+
+test('a scan during an unfinished Daily Note folder migration does not start a second Daily Note', async () => {
+  const { io, service, store } = setup();
+  const event = await service.createLocal({ title: 'Roadmap', start, end });
+  const old = store.state.noteLinks[event.id].dailyPath;
+  io.files.set(old, `My own writing\n\n${io.files.get(old)!}`);
+  // The wizard changed the format; the move was cancelled before this day.
+  store.state.settings.dailyFormerFormat = store.state.settings.dailyFormat;
+  store.state.settings.dailyFormat = 'YYYY/MM/MM-DD/MMMM DD';
+  await service.scanEvents();
+  assert.equal(io.files.size, 2);
+  assert.equal(store.state.noteLinks[event.id].dailyPath, old);
+  assert.match(io.files.get(old)!, /Roadmap/);
+  // The rerun moves the note; the entry is then tracked at the new path, still once.
+  const moved = 'Daily Notes/2026/10/10-22/October 22.md';
+  io.files.set(moved, io.files.get(old)!);
+  io.files.delete(old);
+  retargetState(store.state, [{ kind: 'daily', from: old, to: moved }]);
+  store.state.settings.dailyFormerFormat = '';
+  await service.scanEvents();
+  assert.deepEqual([...io.files.keys()].sort(), ['Calendar Notes/Roadmap.md', moved].sort());
+  assert.equal(store.state.noteLinks[event.id].dailyPath, moved);
+  assert.equal(io.files.get(moved)!.split('[[Calendar Notes/Roadmap').length - 1, 1);
+  assert.match(io.files.get(moved)!, /^My own writing/);
 });

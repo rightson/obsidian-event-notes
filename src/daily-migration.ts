@@ -150,6 +150,8 @@ export interface PlannedMove {
   date: string;
   /** The event of an Event Note. */
   eventId?: string;
+  /** The old folder of the file's day, when this move may empty it without that day's Daily Note moving in the same run. */
+  dayFolder?: string;
 }
 
 export type ConflictReason =
@@ -277,6 +279,19 @@ export function planMigration(input: PlanInput): MigrationPlan {
   // What else is in a moved day's old folder: it follows only when that folder held a single day.
   const days = new Map<string, PlannedMove>();
   for (const move of candidates) if (move.kind === 'daily') days.set(pathKey(folderOf(move.from)), move);
+  // A day an earlier run already moved may have left files in its old folder; they follow now.
+  const leftover = new Set<PlannedMove>();
+  if (dayFolders) for (const path of paths) {
+    if (dailyKeys.has(pathKey(path))) continue;
+    const date = readNew(path);
+    if (!date) continue;
+    const was = dailyPathFor(date, oldLayout, context);
+    const folder = pathKey(folderOf(was));
+    if (!folder || days.has(folder) || files.has(pathKey(was)) || folder === pathKey(folderOf(path))) continue;
+    const day: PlannedMove = { kind: 'daily', from: was, to: path, date };
+    days.set(folder, day);
+    leftover.add(day);
+  }
   let extras = 0;
   const extraOf = new Map<string, string>();
   for (const [key, path] of files) {
@@ -294,7 +309,8 @@ export function planMigration(input: PlanInput): MigrationPlan {
     if (pathKey(target) === pathKey(folder) || pathKey(path).startsWith(`${pathKey(target)}/`)) continue;
     extras++;
     if (!options.moveExtras) { left.add(path); continue; }
-    candidates.push({ kind: 'extra', from: path, to: join(target, path.slice(folder.length + 1)), date: day.date });
+    candidates.push({ kind: 'extra', from: path, to: join(target, path.slice(folder.length + 1)), date: day.date,
+      ...leftover.has(day) ? { dayFolder: folder } : {} });
     extraOf.set(key, pathKey(day.from));
   }
 
@@ -331,7 +347,7 @@ export function planMigration(input: PlanInput): MigrationPlan {
 export function cleanupCandidates(moved: readonly PlannedMove[], baseFolder: string): string[] {
   const base = pathKey(folderPath(baseFolder));
   const below = (folder: string): boolean => !!folder && (base ? pathKey(folder).startsWith(`${base}/`) : true);
-  const dayFolders = moved.filter(move => move.kind === 'daily').map(move => folderOf(move.from)).filter(below);
+  const dayFolders = moved.map(move => move.kind === 'daily' ? folderOf(move.from) : move.dayFolder ?? '').filter(below);
   const found = new Map<string, string>();
   for (const move of moved) {
     let folder = folderOf(move.from);
@@ -373,6 +389,31 @@ export function retargetState(state: Pick<StoredState, 'noteLinks' | 'pathTypes'
     }
   }
   return changed;
+}
+
+/**
+ * A pause on the plugin's background writes, shared by whoever takes it. Taking it
+ * waits for the work already running, because a scan that started earlier would
+ * otherwise carry on under the hold and read a format changed in the meantime.
+ */
+export class WriteHold {
+  private holders = 0;
+
+  constructor(private readonly running: () => Iterable<Promise<unknown> | undefined>, private readonly resume: () => void) {}
+
+  get active(): boolean { return this.holders > 0; }
+
+  /** Resolves, once nothing is running, to the function that gives the hold back. */
+  async take(): Promise<() => void> {
+    this.holders++;
+    await Promise.allSettled([...this.running()].filter(work => !!work));
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (!--this.holders) this.resume();
+    };
+  }
 }
 
 /** What the move needs from the Vault; the tests pass a fake. */

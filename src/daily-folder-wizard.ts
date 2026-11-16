@@ -26,8 +26,8 @@ export interface DailyFolderWizardHost {
   applyFormat(format: string): Promise<boolean>;
   rememberFormerFormat(format: string): Promise<void>;
   openSettingsTab(id: string): boolean;
-  /** Pauses the plugin's own writes to Daily Notes until the returned function is called. */
-  hold(): () => void;
+  /** Pauses the plugin's own writes to Daily Notes, once those already running are done, until the returned function is called. */
+  hold(): Promise<() => void>;
   adapter: MigrationAdapter;
   /** Present when the wizard opened by itself at startup. */
   dismiss?: () => Promise<void>;
@@ -60,6 +60,8 @@ export class DailyFolderWizard extends Modal {
   private running = false;
   private cancelled = false;
   private manual = false;
+  private entering = false;
+  private closed = false;
   private timer?: number;
 
   constructor(app: App, private host: DailyFolderWizardHost) {
@@ -75,6 +77,7 @@ export class DailyFolderWizard extends Modal {
   onClose(): void {
     this.stopWatching();
     this.cancelled = true;
+    this.closed = true;
     // A running move stops after the current file and releases the hold itself.
     if (!this.running) this.letGo();
     this.contentEl.empty();
@@ -304,10 +307,16 @@ export class DailyFolderWizard extends Modal {
 
   /** From here on the format and the notes may disagree, so the plugin's own Daily Note updates wait. */
   private async enterApply(): Promise<void> {
+    if (this.entering) return;
+    this.entering = true;
     try {
       if (this.from !== this.to && this.host.formerFormat() !== this.from) await this.host.rememberFormerFormat(this.from);
+      // Waits for a scan already running, so it cannot meet the new format halfway through.
+      this.release ??= await this.host.hold();
     } catch (error) { new Notice(message(error, 'Could not save settings.')); return; }
-    this.release ??= this.host.hold();
+    finally { this.entering = false; }
+    // Closed while waiting: nobody is left to give the hold back later.
+    if (this.closed) { this.letGo(); return; }
     this.go('apply');
   }
 
@@ -325,7 +334,7 @@ export class DailyFolderWizard extends Modal {
     if (done) {
       root.createEl('p', { text: `The Daily Note format is ${this.to}. New Daily Notes are created at the new path.` });
       root.createEl('p', { text: total
-        ? `Your existing notes have not moved yet; that is the next step. Keep this window open until then: while the format and the notes disagree, Event Notes pauses its own updates to Daily Notes.`
+        ? `Your existing notes have not moved yet; that is the next step. While this window is open, Event Notes pauses its own updates to Daily Notes. If you close it now, a day that already has a Daily Note keeps using that note until you run the wizard again and move it.`
         : 'There are no notes to move.' });
       actions();
       return;

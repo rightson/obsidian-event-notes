@@ -143,7 +143,7 @@ Besides the Daily Notes, the wizard can move:
 
 The text of your notes is not edited; only links to moved files are updated. Each event's entry stays in its Daily Note, and Event Notes keeps tracking it at the new path.
 
-Keep the wizard open between **Apply format** and **Move**. While the format and the notes disagree, Event Notes pauses its own updates to Daily Notes; if you close the wizard in between, its next scan adds each linked event's entry to a new Daily Note at the new path, and the old note for that day is then skipped as a conflict. If a move is cancelled or some files are skipped, run the wizard again: it remembers the earlier format as **Migrate from** and moves what is left.
+While the wizard is open between **Apply format** and **Move**, Event Notes pauses its own updates to Daily Notes. If a move is cancelled, some files are skipped, or you close the wizard before moving, run the wizard again: it remembers the earlier format as **Migrate from** and moves what is left, including attachments still in the old folder of a day whose Daily Note has already moved. Until then, a day whose Daily Note is still at its earlier path keeps using that note for its event entries, so Event Notes does not start a second Daily Note for it. A Daily Note you create for such a day yourself at the new path is used instead, and the wizard then lists the old note as skipped for you to merge.
 
 If you change the Daily Note format yourself instead, existing Daily Notes and Event Notes stay where they are. Run the wizard afterwards and enter the earlier format in **Migrate from** to move them.
 

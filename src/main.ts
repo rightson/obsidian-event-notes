@@ -13,7 +13,7 @@ import { AddSubscriptionModal } from './subscription-modal';
 import { DEFAULT_SETTINGS, resolveDailySettings } from './settings';
 import { dailyNotesShareFolder, setCoreDailyFormat } from './daily-folder-hint';
 import { DailyFolderWizard } from './daily-folder-wizard';
-import { retargetState, type TrackedEventNote } from './daily-migration';
+import { retargetState, WriteHold, type TrackedEventNote } from './daily-migration';
 import { eventNotePathIn, usesDailyFolder } from './paths';
 import { normalizeState } from './state';
 import { CalendarStore, RecoveryConflict } from './store';
@@ -55,7 +55,12 @@ export default class CalendarNotePlugin extends Plugin {
   private moveAgain = false;
   private disposed = false;
   /** Holds on background writes to Daily Notes, taken while the folder wizard changes the format and moves notes. */
-  private held = 0;
+  private writeHold = new WriteHold(() => [this.scanning, this.moving], () => {
+    if (this.disposed) return;
+    if (this.ready) this.subscriptions.start();
+    this.scheduleMoves();
+    void this.refresh(false);
+  });
   private ready = false;
   private lastDiagnostics = '';
   private restoreRenameFile?: () => void;
@@ -297,7 +302,7 @@ export default class CalendarNotePlugin extends Plugin {
     const next = unionRange(this.ranges.values()) ?? range;
     const unchanged = this.range?.start === next.start && this.range?.end === next.end;
     this.range = next;
-    if (!this.ready || this.store.recoveryConflict || this.held) return;
+    if (!this.ready || this.store.recoveryConflict || this.writeHold.active) return;
     if (unchanged) { this.updateEventsFromCache(); this.refreshViews(); return; }
     await this.runAction(async () => {
       await this.subscriptions.setRange(next);
@@ -318,7 +323,7 @@ export default class CalendarNotePlugin extends Plugin {
    */
   async refresh(force = false): Promise<void> {
     if (!force) {
-      if (!this.ready || this.store.recoveryConflict || this.held) return;
+      if (!this.ready || this.store.recoveryConflict || this.writeHold.active) return;
       await this.runAction(async () => {
         await this.rescan();
         if (this.range) await this.subscriptions.refresh(this.range);
@@ -331,7 +336,7 @@ export default class CalendarNotePlugin extends Plugin {
     try {
       if (!this.ready) throw new Error('Event Notes is still starting. Try again in a moment.');
       if (this.store.recoveryConflict) { this.showRecovery(); throw new Error('Resolve pending recovery before refreshing calendars.'); }
-      if (this.held) throw new Error('Finish or close the Daily Note folder wizard before refreshing calendars.');
+      if (this.writeHold.active) throw new Error('Finish or close the Daily Note folder wizard before refreshing calendars.');
       progress.start('scan');
       await this.rescan();
       const range = this.range;
@@ -349,7 +354,7 @@ export default class CalendarNotePlugin extends Plugin {
    * cannot run inside that queue.
    */
   private scheduleMoves(): void {
-    if (!this.ready || this.disposed || this.store.recoveryConflict || this.held) return;
+    if (!this.ready || this.disposed || this.store.recoveryConflict || this.writeHold.active) return;
     if (!Object.values(this.store.state.noteLinks).some(link => link.moveTo && !link.pendingRename)) return;
     if (this.moving) { this.moveAgain = true; return; }
     this.moving = (async () => {
@@ -365,14 +370,14 @@ export default class CalendarNotePlugin extends Plugin {
   }
 
   private scheduleScan(): void {
-    if (!this.ready || this.disposed || this.store.recoveryConflict || this.held) return;
+    if (!this.ready || this.disposed || this.store.recoveryConflict || this.writeHold.active) return;
     if (this.scanTimer) window.clearTimeout(this.scanTimer);
     this.scanTimer = window.setTimeout(() => { this.scanTimer = undefined; void this.rescan(); }, 300);
   }
 
   /** Resolves once a scan that started after this call has finished. */
   private rescan(): Promise<void> {
-    if (!this.ready || this.disposed || this.store.recoveryConflict || this.held) return Promise.resolve();
+    if (!this.ready || this.disposed || this.store.recoveryConflict || this.writeHold.active) return Promise.resolve();
     if (this.scanning) { this.scanAgain = true; return this.scanning; }
     this.scanning = (async () => {
       try {
@@ -620,20 +625,12 @@ export default class CalendarNotePlugin extends Plugin {
    * While the wizard changes the Daily Note format and moves the notes, the two
    * disagree: a scan or calendar refresh in between would write each event's entry
    * into a new Daily Note at the path the notes are about to move to. Background
-   * writes wait until the returned function is called, then catch up.
+   * writes wait until the returned function is called, then catch up. A scan or
+   * move already running is waited for first, so none carries on under the hold.
    */
-  private holdBackgroundWrites(): () => void {
-    this.held++;
+  private holdBackgroundWrites(): Promise<() => void> {
     this.subscriptions.dispose();
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      if (--this.held || this.disposed) return;
-      if (this.ready) this.subscriptions.start();
-      this.scheduleMoves();
-      void this.refresh(false);
-    };
+    return this.writeHold.take();
   }
 
   /** Change the Daily Note path rule and move existing Daily Notes, with their Event Notes, to match. */
@@ -736,8 +733,8 @@ export default class CalendarNotePlugin extends Plugin {
     });
     if (this.range) await this.subscriptions.setRange(this.range);
     // A held plugin catches up when the hold is released.
-    if (this.ready && !this.held) this.subscriptions.start();
-    if (this.ready && !this.held && this.range) await this.subscriptions.refresh(this.range, refresh);
+    if (this.ready && !this.writeHold.active) this.subscriptions.start();
+    if (this.ready && !this.writeHold.active && this.range) await this.subscriptions.refresh(this.range, refresh);
     this.scheduleScan();
   }
 

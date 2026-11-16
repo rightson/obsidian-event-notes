@@ -199,3 +199,22 @@ test('sanitization respects Unicode byte limits and Windows device names', () =>
   assert.equal(long, '😀'.repeat(45));
   assert.throws(() => folderPath('😀'.repeat(64)));
 });
+
+test('during an unfinished folder migration a day keeps its Daily Note at the earlier path until it moves', () => {
+  const files = new Set(['Journal/2026/Q4/11-16/Nov 16.md', 'Journal/2026/Q4/11-17/Nov 17.md', 'Journal/2026/11/11-17/November 17.md']);
+  const vault = { vault: { getAbstractFileByPath: (path: string) => files.has(path) ? { path } : null } } as unknown as App;
+  const moving = settings({ dailyFolder: 'Journal', dailyFormat: 'YYYY/MM/MM-DD/MMMM DD', dailyFormerFormat: 'YYYY/[Q]Q/MM-DD/MMM DD', eventPattern: '{daily}/{title}' });
+  // Not moved yet: entries stay in the note the user has, and no second note is made for the day.
+  assert.equal(dailyNotePath('2026-11-16', vault, moving), 'Journal/2026/Q4/11-16/Nov 16.md');
+  assert.equal(dailyNoteFolder('2026-11-16', vault, moving), 'Journal/2026/Q4/11-16');
+  // A note at the new path wins, and so does a day with no note at all.
+  assert.equal(dailyNotePath('2026-11-17', vault, moving), 'Journal/2026/11/11-17/November 17.md');
+  assert.equal(dailyNotePath('2026-11-18', vault, moving), 'Journal/2026/11/11-18/November 18.md');
+  // Once moved, or with no migration pending, only the current format counts.
+  files.delete('Journal/2026/Q4/11-16/Nov 16.md');
+  assert.equal(dailyNotePath('2026-11-16', vault, moving), 'Journal/2026/11/11-16/November 16.md');
+  files.add('Journal/2026/Q4/11-16/Nov 16.md');
+  assert.equal(dailyNotePath('2026-11-16', vault, { ...moving, dailyFormerFormat: '' }), 'Journal/2026/11/11-16/November 16.md');
+  // An earlier format that cannot name a Daily Note changes nothing.
+  assert.equal(dailyNotePath('2026-11-16', vault, { ...moving, dailyFormerFormat: '{title}' }), 'Journal/2026/11/11-16/November 16.md');
+});
