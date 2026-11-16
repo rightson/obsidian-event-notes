@@ -8,7 +8,7 @@ import { patchSubscription, subscriptionStatus } from './subscription-settings';
 import { PROBLEM_LABELS, PROBLEM_ORDER } from './note-problems';
 import { holidayOptions, isCalendarKind, isHolidayShade, type HolidayOptions } from './holidays';
 import {
-  agendaSummary, clickingSummary, diagnosticsSummary, displaySummary, ganttSummary, monthsSummary, ribbonSummary, notePathsSummary,
+  agendaSummary, clickingSummary, diagnosticsSummary, displaySummary, eventNotesSummary, ganttSummary, monthsSummary, periodicNotesSummary, providerLabel, ribbonSummary,
   readOpenSections, revealOnLookup, sectionHeading, sourceSectionKey, sourceSummary, startsOpen, subscriptionsSummary, withSectionOpen, type SectionSummary,
 } from './settings-sections';
 
@@ -79,7 +79,7 @@ export class CalendarNoteSettingTab extends PluginSettingTab {
   getSettingDefinitions(): SettingDefinitionItem[] {
     const settings = () => this.plugin.store.state.settings;
     return [
-      this.section('paths', () => notePathsSummary(settings()), { type: 'group', heading: 'Note paths', items: [
+      this.section('event-notes', () => eventNotesSummary(settings()), { type: 'group', heading: 'Event Notes', items: [
         this.text('Event Note pattern', 'Moment date tokens, {title}, {calendar}, and {uid}. Start with {daily}/ to use the folder of the event’s Daily Note, such as {daily}/{title}.', 'eventPattern'),
         this.live('Event Note sample', current => eventNotePath(sample, 'Local', this.app, current)),
         { name: 'Daily Note folders', desc: 'Change the Daily Note path rule, such as a folder for each day, and move your existing Daily Notes and their Event Notes to match. A wizard shows every change before it is made.',
@@ -90,18 +90,20 @@ export class CalendarNoteSettingTab extends PluginSettingTab {
         this.dropdown('Event Note Properties', 'eventPropertiesDefault', [
           ['obsidian', 'Follow Obsidian'], ['collapsed', 'Collapsed'], ['expanded', 'Expanded'],
         ], 'Initial Properties state when an Event Note opens. You can toggle it in the note.'),
-        this.live('Daily Notes provider', current => {
-          const { provider } = resolveDailySettings(this.app, current);
-          return provider === 'calendar-note' ? 'this plugin' : provider;
-        }),
+      ] }),
+      this.section('daily-notes', () => periodicNotesSummary(() => ({
+        path: dailyNotePath('2026-10-23', this.app, settings()), provider: resolveDailySettings(this.app, settings()).provider,
+      })), { type: 'group', heading: 'Daily Notes', items: [
+        this.live('Daily Notes provider', current => providerLabel(resolveDailySettings(this.app, current).provider)),
         this.text('Daily fallback folder', 'Used when core Daily Notes is disabled.', 'dailyFolder'),
         this.text('Daily fallback format', 'Moment date format; no event placeholders.', 'dailyFormat'),
         this.text('Daily fallback template', 'Vault-relative Markdown template path, optional.', 'dailyTemplate'),
         this.live('Daily Note sample', current => dailyNotePath('2026-10-23', this.app, current)),
-        this.live('Weekly Notes provider', current => {
-          const { provider } = resolveWeeklySettings(this.app, current);
-          return provider === 'calendar-note' ? 'this plugin' : provider;
-        }),
+      ] }),
+      this.section('weekly-notes', () => periodicNotesSummary(() => ({
+        path: weeklyNotePath('2026-10-23', this.app, settings()), provider: resolveWeeklySettings(this.app, settings()).provider,
+      })), { type: 'group', heading: 'Weekly Notes', items: [
+        this.live('Weekly Notes provider', current => providerLabel(resolveWeeklySettings(this.app, current).provider)),
         this.text('Weekly fallback folder', 'Used when Calendar and Periodic Notes have no active weekly settings.', 'weeklyFolder'),
         this.text('Weekly fallback format', 'Moment locale week tokens: gggg and ww. ISO: GGGG and WW.', 'weeklyFormat'),
         this.text('Weekly fallback template', 'Vault-relative Markdown template path, optional.', 'weeklyTemplate'),
