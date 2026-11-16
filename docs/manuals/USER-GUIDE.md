@@ -41,18 +41,26 @@ Settings → **Clicking** chooses what a left-click does in each calendar:
 
 A compact month calendar, like a calendar widget, sits beside your notes. It is a separate view from the mini calendar inside the calendar tab, so it stays visible while you work in notes. It starts at the current month and adds the following months as long as whole months fit the panel's height.
 
-- **Where it appears:** it is added to the right sidebar when Obsidian starts, unless it is already open somewhere. Drag its tab anywhere; it stays where you put it on later starts. To stack it under the file explorer in the left sidebar, one above the other, drag it there or run **Move month calendar below the file explorer** (also a button in settings). Run **Open month calendar in sidebar** to bring it back after closing it.
+- **Where it appears:** it is added to the left sidebar, under the file explorer, when Obsidian starts, unless it is already open somewhere. It takes the bottom third of the sidebar and the file explorer keeps the rest. Drag its tab anywhere; it stays where you put it on later starts. To bring it back under the file explorer, run **Move month calendar below the file explorer** (also a button in settings). Run **Open month calendar in sidebar**, or click its ribbon icon, to reveal it or bring it back after closing it.
 - **How many months:** a taller panel shows more months, and a wide panel lays them out side by side. In a short panel the month cards get smaller, in up to three steps, until the number of months set in **Show at least** fits. Cards only shrink when that shows an extra month.
 - **Opening notes:** click a date to open its Daily Note, or a week number to open its Weekly Note, in the main area. Ctrl/Cmd-click opens it in a new tab.
 - **What it marks:** dots under a date show its events (up to three), bold dates already have a Daily Note, and the Daily Note you are viewing is highlighted. Today is outlined, and holidays from holiday calendars are shaded as in the mini calendar (see [Holiday calendars](#holiday-calendars)).
 - **Moving through months:** use **‹** and **›**, or scroll over the months; **Today** returns to the current month.
 - Subscribed events are marked only for the dates the main calendar has loaded; local events are always marked.
 
+Settings under **Ribbon icons** choose which icons appear in Obsidian's ribbon; a change applies at once, and the commands stay in the command palette either way:
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| Main calendar | On | Shows the icon that opens the calendar. |
+| Events sidebar | On | Shows the icon that opens the events sidebar. |
+| Month calendar | On | Shows the icon that opens the month calendar. |
+
 Settings under **Month calendar**:
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| Add to the right sidebar at startup | On | Adds the month calendar at startup when it is not open anywhere. Turn it off to keep it closed. |
+| Add below the file explorer at startup | On | Adds the month calendar at startup when it is not open anywhere. Turn it off to keep it closed. |
 | Show at least | 3 months | In a short panel, month cards shrink until this many months fit (1–12). |
 | Place below the file explorer | — | Moves the month calendar under the file explorer in the left sidebar. |
 

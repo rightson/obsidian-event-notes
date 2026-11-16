@@ -4,7 +4,7 @@ import { CalendarNoteView, CALENDAR_VIEW_TYPE } from './calendar-view';
 import { AgendaView, AGENDA_VIEW_TYPE, AGENDA_HOVER_SOURCE } from './agenda-view';
 import { unionRange } from './agenda-layout';
 import { MonthsView, MONTHS_VIEW_TYPE } from './months-view';
-import { calendarOpenModeForClick, ensureSidebarView, leafBelowFileExplorer, openCalendarLeaf, type CalendarOpenMode } from './calendar-open';
+import { calendarOpenModeForClick, ensureBelowFileExplorer, leafBelowFileExplorer, openCalendarLeaf, type CalendarOpenMode } from './calendar-open';
 import { EventPropertiesController } from './event-properties';
 import { ChangeHistoryModal, EventModal } from './modals';
 import { EventNoteProblemsModal } from './problems-modal';
@@ -73,6 +73,7 @@ export default class CalendarNotePlugin extends Plugin {
   projectWriter!: ProjectWriter;
   private ganttActionViews = new WeakSet<MarkdownView>();
   private ganttActions = new Set<HTMLElement>();
+  private ribbonIcons = new Map<string, HTMLElement>();
   private projectsScanned = false;
 
   /** Imports settings from Calendar Pro or Calendar-Note, this plugin's earlier IDs, once. */
@@ -149,8 +150,7 @@ export default class CalendarNotePlugin extends Plugin {
       void this.projects.scanAll();
     }));
     this.registerHoverLinkSource(AGENDA_HOVER_SOURCE, { display: 'Event Notes events sidebar', defaultMod: false });
-    this.addRibbonIcon('calendar-days', 'Open Event Notes calendar', evt => void this.openCalendar(calendarOpenModeForClick(evt)));
-    this.addRibbonIcon('calendar-clock', 'Open Event Notes events sidebar', () => void this.openAgenda());
+    this.syncRibbonIcons();
     this.addCommand({ id: 'open-calendar', name: 'Open calendar in new tab', callback: () => void this.openCalendar('tab') });
     this.addCommand({ id: 'open-calendar-right', name: 'Open calendar in right split', callback: () => void this.openCalendar('right-split') });
     this.addCommand({ id: 'open-months', name: 'Open month calendar in sidebar', callback: () => void this.openMonths() });
@@ -211,7 +211,7 @@ export default class CalendarNotePlugin extends Plugin {
       void this.runAction(async () => { await this.notes.finalizePendingRenames(); }).then(() => this.rescan());
       this.scheduleMoves();
       this.subscriptions.start();
-      if (this.store.state.settings.monthsOnStartup) void ensureSidebarView(this.app.workspace, MONTHS_VIEW_TYPE);
+      if (this.store.state.settings.monthsOnStartup) void ensureBelowFileExplorer(this.app.workspace, MONTHS_VIEW_TYPE);
       if (this.range) void this.refresh(false);
       if (this.store.recoveryConflict) this.showRecovery();
       if (!this.store.recoveryConflict && !this.store.state.settings.dailyFolderHintDismissed) this.showDailyFolderHint();
@@ -272,16 +272,31 @@ export default class CalendarNotePlugin extends Plugin {
     return leaf.view as CalendarNoteView;
   }
 
+  /** Show the ribbon icons the settings ask for; turning one off removes it at once. */
+  private syncRibbonIcons(): void {
+    const settings = this.store.state.settings;
+    const icons: Array<[boolean, string, string, (evt: MouseEvent) => void]> = [
+      [settings.ribbonCalendar, 'calendar-days', 'Open Event Notes calendar', evt => void this.openCalendar(calendarOpenModeForClick(evt))],
+      [settings.ribbonAgenda, 'calendar-clock', 'Open Event Notes events sidebar', () => void this.openAgenda()],
+      [settings.ribbonMonths, 'calendar-range', 'Open Event Notes month calendar', () => void this.openMonths()],
+    ];
+    for (const [shown, icon, title, click] of icons) {
+      const el = this.ribbonIcons.get(icon);
+      if (shown && !el) this.ribbonIcons.set(icon, this.addRibbonIcon(icon, title, click));
+      else if (!shown && el) { el.remove(); this.ribbonIcons.delete(icon); }
+    }
+  }
+
   /**
-   * Reveal the month calendar where it is, adding it to the right sidebar the
-   * first time; 'below-explorer' moves it under the file explorer instead.
+   * Reveal the month calendar where it is, adding it below the file explorer the
+   * first time; 'below-explorer' moves it there from wherever it is.
    */
   async openMonths(place: 'sidebar' | 'below-explorer' = 'sidebar'): Promise<void> {
     const workspace = this.app.workspace;
     const existing = workspace.getLeavesOfType(MONTHS_VIEW_TYPE);
     if (place === 'below-explorer') existing.forEach(leaf => leaf.detach());
     const reuse = place === 'sidebar' ? existing[0] : undefined;
-    const leaf = reuse ?? (place === 'below-explorer' ? leafBelowFileExplorer(workspace) : workspace.getRightLeaf(false));
+    const leaf = reuse ?? leafBelowFileExplorer(workspace);
     if (!leaf) return;
     if (!reuse) await leaf.setViewState({ type: MONTHS_VIEW_TYPE, active: true });
     await workspace.revealLeaf(leaf);
@@ -723,6 +738,7 @@ export default class CalendarNotePlugin extends Plugin {
     const previousPropertiesDefault = this.store.state.settings.eventPropertiesDefault;
     await this.store.commit([], state => { state.settings = settings; });
     if (settings.eventPropertiesDefault !== previousPropertiesDefault) this.eventProperties?.settingsChanged();
+    this.syncRibbonIcons();
     for (const view of this.getViews()) view.settingsChanged();
     for (const view of this.getMonthsViews()) view.refresh();
     for (const view of this.getAgendaViews()) view.settingsChanged();

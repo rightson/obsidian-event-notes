@@ -15,7 +15,7 @@ export async function openCalendarLeaf(workspace: Workspace, viewType: string, m
 }
 
 /** Layout fields Obsidian keeps on workspace items at runtime but leaves out of its typings. */
-interface LayoutItem { parent?: LayoutItem | null; children?: LayoutItem[]; direction?: string }
+interface LayoutItem { parent?: LayoutItem | null; children?: LayoutItem[]; direction?: string; setDimension?: (size: number) => void }
 
 function newTabAfter(workspace: Workspace, anchor: WorkspaceLeaf): WorkspaceLeaf {
   const tabs = anchor.parent as unknown as LayoutItem;
@@ -84,23 +84,29 @@ export function noteSplitLeaf(workspace: Workspace, calendarLeaf: WorkspaceLeaf,
 export const FILE_EXPLORER_VIEW_TYPE = 'file-explorer';
 
 /**
- * A leaf stacked under the file explorer in the left sidebar, so the two share it
- * one above the other. Without an explorer there, a new group at the bottom of the
- * left sidebar.
+ * A leaf stacked under the file explorer in the left sidebar: the explorer keeps
+ * the top two thirds and the new leaf takes the rest. Without an explorer there,
+ * a new group at the bottom of the left sidebar.
  */
 export function leafBelowFileExplorer(workspace: Workspace): WorkspaceLeaf | null {
   const explorer = workspace.getLeavesOfType(FILE_EXPLORER_VIEW_TYPE).find(leaf => leaf.getRoot() === workspace.leftSplit);
-  return explorer ? workspace.createLeafBySplit(explorer, 'horizontal') : workspace.getLeftLeaf(true);
+  if (!explorer) return workspace.getLeftLeaf(true);
+  const leaf = workspace.createLeafBySplit(explorer, 'horizontal');
+  // Obsidian splits in half and has no public way to size a pane, so this does nothing where setDimension is gone.
+  (explorer.parent as unknown as LayoutItem | undefined)?.setDimension?.(200 / 3);
+  (leaf.parent as unknown as LayoutItem | undefined)?.setDimension?.(100 / 3);
+  workspace.requestSaveLayout();
+  return leaf;
 }
 
 /**
- * Adds a view to the right sidebar unless one is already open anywhere, so a
- * tab the user dragged elsewhere (for example under the file explorer) stays put.
- * Returns the leaf it created, if any. It does not take focus.
+ * Adds a view below the file explorer unless one is already open anywhere, so a
+ * tab the user dragged elsewhere stays put. Returns the leaf it created, if any.
+ * It does not take focus.
  */
-export async function ensureSidebarView(workspace: Workspace, viewType: string): Promise<WorkspaceLeaf | undefined> {
+export async function ensureBelowFileExplorer(workspace: Workspace, viewType: string): Promise<WorkspaceLeaf | undefined> {
   if (workspace.getLeavesOfType(viewType).length) return undefined;
-  const leaf = workspace.getRightLeaf(false);
+  const leaf = leafBelowFileExplorer(workspace);
   if (!leaf) return undefined;
   await leaf.setViewState({ type: viewType, active: false });
   return leaf;

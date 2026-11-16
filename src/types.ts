@@ -85,7 +85,11 @@ export interface PluginSettings extends WeekRules {
   sidebarCollapsed: boolean;
   mainCollapsed: boolean;
   workdaysOnly: boolean;
-  /** Add the month calendar to the right sidebar at startup when it is not open anywhere. */
+  /** Which ribbon icons are shown: the main calendar, the events sidebar, and the month calendar. */
+  ribbonCalendar: boolean;
+  ribbonAgenda: boolean;
+  ribbonMonths: boolean;
+  /** Add the month calendar below the file explorer at startup when it is not open anywhere. */
   monthsOnStartup: boolean;
   /** Month cards shrink until at least this many months fit the panel. */
   monthsMinimum: number;
