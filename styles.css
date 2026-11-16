@@ -517,13 +517,21 @@ body:not(.is-phone) .modal.cn-event-modal { width: min(1100px, 80vw); min-width:
 .cn-refresh-notice.is-failed .cn-refresh-title { color: var(--color-red); }
 @media (prefers-reduced-motion: reduce) { .cn-refresh-bar-fill { transition: none; } }
 
-/* Per-day folder suggestion */
+/* Daily Note folder wizard */
 .cn-daily-folder-paths { width: 100%; border-collapse: collapse; margin-bottom: var(--size-4-3); }
 .cn-daily-folder-paths th, .cn-daily-folder-paths td { padding: var(--size-4-1) var(--size-4-2); text-align: start; vertical-align: top; border-bottom: 1px solid var(--background-modifier-border); }
 .cn-daily-folder-paths tbody th { font-weight: var(--font-semibold); white-space: nowrap; }
 .cn-daily-folder-paths code { word-break: break-all; }
-.cn-daily-folder-warning { padding: var(--size-4-2) var(--size-4-3); border-inline-start: 3px solid var(--color-orange); background: var(--background-secondary); border-radius: var(--radius-s); }
-.cn-daily-folder-warning p { margin: 0; }
+.cn-daily-wizard-step { color: var(--text-muted); font-size: var(--font-ui-small); margin-top: 0; }
+.cn-daily-wizard-warning, .cn-daily-wizard-error { margin-bottom: var(--size-4-2); padding: var(--size-4-2) var(--size-4-3); border-inline-start: 3px solid var(--color-orange); background: var(--background-secondary); border-radius: var(--radius-s); overflow-wrap: anywhere; }
+.cn-daily-wizard-error { border-inline-start-color: var(--color-red); }
+.cn-daily-wizard-muted { color: var(--text-muted); font-size: var(--font-ui-small); }
+.cn-daily-wizard-section { margin-bottom: var(--size-4-2); }
+.cn-daily-wizard-section > summary { cursor: pointer; font-weight: var(--font-semibold); }
+.cn-daily-wizard-list { max-height: 14em; overflow-y: auto; margin: var(--size-4-1) 0; padding-inline-start: var(--size-4-4); font-size: var(--font-ui-small); }
+.cn-daily-wizard-list li { margin-bottom: var(--size-2-1); overflow-wrap: anywhere; }
+.cn-daily-wizard-list code { word-break: break-all; }
+.cn-daily-wizard-status { margin-top: var(--size-4-2); color: var(--text-muted); font-size: var(--font-ui-small); overflow-wrap: anywhere; }
 .cn-subscription-failure.is-warning { background: color-mix(in srgb, var(--color-orange) 18%, transparent); color: var(--text-normal); }
 .cn-subscription-failure a { color: inherit; text-decoration: underline; }
 .cn-refresh-notice.is-warning .cn-refresh-bar-fill { background: var(--color-orange); }

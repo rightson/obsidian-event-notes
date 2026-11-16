@@ -110,12 +110,18 @@ export function dailyNoteFolder(date: string | Date, app: App, settings: PluginS
  * formatting so its text is never read as Moment tokens.
  */
 export function eventNotePath(event: CalendarEvent, sourceName: string, app: App, settings: PluginSettings): string {
+  return eventNotePathIn(event, sourceName, settings, date => dailyNoteFolder(date, app, settings));
+}
+
+/** The Event Note path when `dailyFolder` gives each date's Daily Note folder, as for a format not in use yet. */
+export function eventNotePathIn(event: CalendarEvent, sourceName: string, settings: PluginSettings,
+  dailyFolder: (date: string) => string): string {
   let pattern = typeof settings.eventPattern === 'string' ? settings.eventPattern.trim() : settings.eventPattern;
   let folder = '';
   const daily = DAILY_PREFIX.exec(pattern);
   if (daily) {
     pattern = daily[1];
-    folder = dailyNoteFolder(eventCalendarDate(event, settings.timeZone), app, settings);
+    folder = dailyFolder(eventCalendarDate(event, settings.timeZone));
   }
   const path = formatNotePath(pattern, event.start,
     { locale: settings.locale, weekMode: settings.weekMode, weekStart: settings.weekStart },
@@ -137,19 +143,41 @@ const stemOf = (path: string): string => pathKey(nameOf(path)).replace(/\.md$/, 
  */
 export function followPatternPath(current: string, before: CalendarEvent, after: CalendarEvent,
   sourceName: string, app: App, settings: PluginSettings): string | undefined {
-  const was = eventNotePath(before, sourceName, app, settings);
+  return followPath(current, eventNotePath(before, sourceName, app, settings), eventNotePath(after, sourceName, app, settings));
+}
+
+/** `current` carried from the pattern path `was` to the pattern path `next`; undefined when it is not in the folder of `was`. */
+export function followPath(current: string, was: string, next: string): string | undefined {
   if (pathKey(folderOf(current)) !== pathKey(folderOf(was))) return undefined;
-  const next = eventNotePath(after, sourceName, app, settings);
   const name = stemOf(current) === stemOf(was) ? nameOf(next) : nameOf(current);
   const folder = folderOf(next);
   return folder ? `${folder}/${name}` : name;
 }
 
+/**
+ * While the folder wizard has changed the format but not yet moved every note
+ * (`dailyFormerFormat` is set), a day whose Daily Note still sits at the earlier
+ * path keeps that path. Otherwise a scan would start a second Daily Note for the
+ * day at the new path, and the wizard could no longer move the first one there.
+ */
 export function dailyNotePath(date: string | Date, app: App, settings: PluginSettings): string {
   const provider = resolveDailySettings(app, settings);
-  const dateName = formatNotePath(provider.format, date,
-    { locale: settings.locale, weekMode: settings.weekMode, weekStart: settings.weekStart }, settings.timeZone, {}, true);
-  const folder = folderPath(provider.folder);
+  const rules: WeekRules = { locale: settings.locale, weekMode: settings.weekMode, weekStart: settings.weekStart };
+  const path = dailyNotePathIn(provider.folder, provider.format, date, rules, settings.timeZone);
+  const former = typeof settings.dailyFormerFormat === 'string' ? settings.dailyFormerFormat.trim() : '';
+  if (!former || former === provider.format.trim()) return path;
+  const exists = (candidate: string): boolean => !!app.vault?.getAbstractFileByPath?.(candidate);
+  try {
+    const earlier = dailyNotePathIn(provider.folder, former, date, rules, settings.timeZone);
+    if (pathKey(earlier) !== pathKey(path) && exists(earlier) && !exists(path)) return earlier;
+  } catch { /* an earlier format that names no path keeps nothing back */ }
+  return path;
+}
+
+/** The Daily Note path a base folder and date format give, whether or not they are the ones in use. */
+export function dailyNotePathIn(baseFolder: string, format: string, date: string | Date, rules: WeekRules, zone: string): string {
+  const dateName = formatNotePath(format, date, rules, zone, {}, true);
+  const folder = folderPath(baseFolder);
   return folder ? `${folder}/${dateName}` : dateName;
 }
 

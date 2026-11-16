@@ -1,4 +1,4 @@
-import { MarkdownView, Modal, Notice, Plugin, TFile, requestUrl, type WorkspaceLeaf } from 'obsidian';
+import { MarkdownView, Modal, Notice, Plugin, TFile, TFolder, normalizePath, requestUrl, type WorkspaceLeaf } from 'obsidian';
 import moment from 'moment-timezone';
 import { CalendarNoteView, CALENDAR_VIEW_TYPE } from './calendar-view';
 import { AgendaView, AGENDA_VIEW_TYPE, AGENDA_HOVER_SOURCE } from './agenda-view';
@@ -11,11 +11,13 @@ import { EventNoteProblemsModal } from './problems-modal';
 import { CalendarNoteSettingTab, validatePluginSettings } from './settings-tab';
 import { AddSubscriptionModal } from './subscription-modal';
 import { DEFAULT_SETTINGS, resolveDailySettings } from './settings';
-import { dailyFolderHint, existingDailyNotes } from './daily-folder-hint';
-import { DailyFolderHintModal } from './daily-folder-modal';
+import { dailyNotesShareFolder, setCoreDailyFormat } from './daily-folder-hint';
+import { DailyFolderWizard } from './daily-folder-wizard';
+import { retargetState, WriteHold, type TrackedEventNote } from './daily-migration';
+import { eventNotePathIn, usesDailyFolder } from './paths';
 import { normalizeState } from './state';
 import { CalendarStore, RecoveryConflict } from './store';
-import { createObsidianStoreIO } from './vault-adapter';
+import { createObsidianStoreIO, ensureParentFolder } from './vault-adapter';
 import { migrateLegacyData } from './migrate';
 import { EventNoteService, type ChooseNote } from './events';
 import { SubscriptionService, type RefreshOptions } from './subscriptions';
@@ -28,7 +30,7 @@ import { SettingsUpdateQueue, newSubscription, patchSubscription } from './subsc
 import { historyForReview, type ChangeHistoryEntry } from './history';
 import type { CalendarEvent, CalendarSource, Interval, PluginSettings } from './types';
 import type { CalendarRange } from './ical';
-import { dateAt } from './date';
+import { dateAt, eventCalendarDate } from './date';
 import { isEventNoteFrontmatter } from './event-properties-state';
 import { GanttView, GANTT_VIEW_TYPE, ganttIcon } from './gantt-view';
 import { ProjectIndex } from './project-index';
@@ -52,6 +54,13 @@ export default class CalendarNotePlugin extends Plugin {
   private moving?: Promise<void>;
   private moveAgain = false;
   private disposed = false;
+  /** Holds on background writes to Daily Notes, taken while the folder wizard changes the format and moves notes. */
+  private writeHold = new WriteHold(() => [this.scanning, this.moving], () => {
+    if (this.disposed) return;
+    if (this.ready) this.subscriptions.start();
+    this.scheduleMoves();
+    void this.refresh(false);
+  });
   private ready = false;
   private lastDiagnostics = '';
   private restoreRenameFile?: () => void;
@@ -164,6 +173,7 @@ export default class CalendarNotePlugin extends Plugin {
     this.addCommand({ id: 'retry-recovery', name: 'Retry pending recovery', callback: () => void this.retryRecovery() });
     this.addCommand({ id: 'calendar-import-problems', name: 'Show calendar import problems', callback: () => this.showImportProblems() });
     this.addCommand({ id: 'review-event-note-problems', name: 'Review Event Note problems', callback: () => this.showProblems() });
+    this.addCommand({ id: 'daily-folder-wizard', name: 'Change Daily Note folders', callback: () => this.openDailyFolderWizard() });
     this.settingTab = new CalendarNoteSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
     const changed = (file: TFile) => { if (file.extension === 'md') this.scheduleScan(); };
@@ -292,7 +302,7 @@ export default class CalendarNotePlugin extends Plugin {
     const next = unionRange(this.ranges.values()) ?? range;
     const unchanged = this.range?.start === next.start && this.range?.end === next.end;
     this.range = next;
-    if (!this.ready || this.store.recoveryConflict) return;
+    if (!this.ready || this.store.recoveryConflict || this.writeHold.active) return;
     if (unchanged) { this.updateEventsFromCache(); this.refreshViews(); return; }
     await this.runAction(async () => {
       await this.subscriptions.setRange(next);
@@ -313,7 +323,7 @@ export default class CalendarNotePlugin extends Plugin {
    */
   async refresh(force = false): Promise<void> {
     if (!force) {
-      if (!this.ready || this.store.recoveryConflict) return;
+      if (!this.ready || this.store.recoveryConflict || this.writeHold.active) return;
       await this.runAction(async () => {
         await this.rescan();
         if (this.range) await this.subscriptions.refresh(this.range);
@@ -326,6 +336,7 @@ export default class CalendarNotePlugin extends Plugin {
     try {
       if (!this.ready) throw new Error('Event Notes is still starting. Try again in a moment.');
       if (this.store.recoveryConflict) { this.showRecovery(); throw new Error('Resolve pending recovery before refreshing calendars.'); }
+      if (this.writeHold.active) throw new Error('Finish or close the Daily Note folder wizard before refreshing calendars.');
       progress.start('scan');
       await this.rescan();
       const range = this.range;
@@ -343,7 +354,7 @@ export default class CalendarNotePlugin extends Plugin {
    * cannot run inside that queue.
    */
   private scheduleMoves(): void {
-    if (!this.ready || this.disposed || this.store.recoveryConflict) return;
+    if (!this.ready || this.disposed || this.store.recoveryConflict || this.writeHold.active) return;
     if (!Object.values(this.store.state.noteLinks).some(link => link.moveTo && !link.pendingRename)) return;
     if (this.moving) { this.moveAgain = true; return; }
     this.moving = (async () => {
@@ -359,14 +370,14 @@ export default class CalendarNotePlugin extends Plugin {
   }
 
   private scheduleScan(): void {
-    if (!this.ready || this.disposed || this.store.recoveryConflict) return;
+    if (!this.ready || this.disposed || this.store.recoveryConflict || this.writeHold.active) return;
     if (this.scanTimer) window.clearTimeout(this.scanTimer);
     this.scanTimer = window.setTimeout(() => { this.scanTimer = undefined; void this.rescan(); }, 300);
   }
 
   /** Resolves once a scan that started after this call has finished. */
   private rescan(): Promise<void> {
-    if (!this.ready || this.disposed || this.store.recoveryConflict) return Promise.resolve();
+    if (!this.ready || this.disposed || this.store.recoveryConflict || this.writeHold.active) return Promise.resolve();
     if (this.scanning) { this.scanAgain = true; return this.scanning; }
     this.scanning = (async () => {
       try {
@@ -601,21 +612,107 @@ export default class CalendarNotePlugin extends Plugin {
   }
 
   /**
-   * Suggests a folder per day when `{daily}` files Event Notes beside Daily Notes that
-   * all share one folder. Returns false when there is nothing to suggest.
+   * Suggests the Daily Note folder wizard when `{daily}` files Event Notes beside Daily
+   * Notes that all share one folder. Returns false when there is nothing to suggest.
    */
   showDailyFolderHint(): boolean {
-    const settings = this.store.state.settings;
-    const hint = dailyFolderHint(this.app, settings);
-    if (!hint) return false;
-    const existing = existingDailyNotes(this.app.vault.getMarkdownFiles().map(file => file.path), hint, settings.locale).length;
-    const ownProvider = resolveDailySettings(this.app, settings).provider === 'calendar-note';
-    new DailyFolderHintModal(this.app, hint, existing, {
-      applyFormat: ownProvider ? format => this.updateSettingsFromView(next => { next.dailyFormat = format; }) : undefined,
-      openSettingsTab: id => this.openSettingsTab(id),
-      dismiss: () => this.updateSettingsFromView(next => { next.dailyFolderHintDismissed = true; }),
-    }).open();
+    if (!dailyNotesShareFolder(this.app, this.store.state.settings)) return false;
+    this.openDailyFolderWizard(true);
     return true;
+  }
+
+  /**
+   * While the wizard changes the Daily Note format and moves the notes, the two
+   * disagree: a scan or calendar refresh in between would write each event's entry
+   * into a new Daily Note at the path the notes are about to move to. Background
+   * writes wait until the returned function is called, then catch up. A scan or
+   * move already running is waited for first, so none carries on under the hold.
+   */
+  private holdBackgroundWrites(): Promise<() => void> {
+    this.subscriptions.dispose();
+    return this.writeHold.take();
+  }
+
+  /** Change the Daily Note path rule and move existing Daily Notes, with their Event Notes, to match. */
+  openDailyFolderWizard(suggested = false): void {
+    if (this.store.recoveryConflict) { this.showRecovery(); return; }
+    const settings = () => this.store.state.settings;
+    const hostMoment = (window as Window & { moment?: (date: string, format: string, strict: boolean) => { format: (format: string) => string } }).moment;
+    new DailyFolderWizard(this.app, {
+      daily: () => resolveDailySettings(this.app, settings()),
+      formerFormat: () => settings().dailyFormerFormat,
+      context: () => {
+        const { locale, weekMode, weekStart, timeZone } = settings();
+        const host = (hostMoment as unknown as { locale?: () => string } | undefined)?.locale?.();
+        return { rules: { locale, weekMode, weekStart }, zone: timeZone, locales: host ? [host] : [] };
+      },
+      today: () => this.today(),
+      files: () => this.app.vault.getFiles().map(file => file.path),
+      trackedEventNotes: () => this.trackedEventNotes(),
+      eventSample: (date, dailyFolder) => eventNotePathIn({ id: 'local|sample', sourceId: 'local', uid: 'sample', title: 'Sample event',
+        start: date, end: date, allDay: true }, 'Local', settings(), dailyFolder),
+      // Only the core plugin names notes with Obsidian's own locale.
+      obsidianName: (date, format) => {
+        if (resolveDailySettings(this.app, settings()).provider !== 'daily-notes' || typeof hostMoment !== 'function') return undefined;
+        try { return hostMoment(date, 'YYYY-MM-DD', true).format(format); }
+        catch { return undefined; }
+      },
+      applyFormat: async format => {
+        const { provider } = resolveDailySettings(this.app, settings());
+        if (provider === 'daily-notes') return setCoreDailyFormat(this.app, settings(), format);
+        if (provider !== 'calendar-note') return false;
+        await this.updateSettingsFromView(next => { next.dailyFormat = format; });
+        return true;
+      },
+      rememberFormerFormat: format => this.updateSettingsFromView(next => { next.dailyFormerFormat = format; }),
+      openSettingsTab: id => this.openSettingsTab(id),
+      hold: () => this.holdBackgroundWrites(),
+      adapter: {
+        exists: path => this.app.vault.adapter.exists(normalizePath(path)),
+        move: async move => {
+          if (move.kind === 'event' && move.eventId) {
+            // The note service's own move: it also keeps the event's link and Daily entry right.
+            if (!await this.notes.moveEventNote(move.eventId, move.from, move.to)) throw new Error('This is no longer the Event Note of its event.');
+            return;
+          }
+          const file = this.app.vault.getAbstractFileByPath(move.from);
+          if (!file) throw new Error('The file is no longer there.');
+          await ensureParentFolder(this.app, move.to);
+          await this.app.fileManager.renameFile(file, move.to);
+        },
+        record: async move => {
+          const { noteLinks, pathTypes, history } = this.store.state;
+          // The rename handler usually has done this already; save only what it missed.
+          if (!retargetState(structuredClone({ noteLinks, pathTypes, history }), [move])) return;
+          await this.store.commit([], state => { retargetState(state, [move]); });
+        },
+        isEmptyFolder: async path => {
+          if (!(this.app.vault.getAbstractFileByPath(path) instanceof TFolder)) return false;
+          // Asked of the disk, so files Obsidian does not show count too.
+          const listed = await this.app.vault.adapter.list(normalizePath(path));
+          return listed.files.length === 0 && listed.folders.length === 0;
+        },
+        removeFolder: async path => {
+          const folder = this.app.vault.getAbstractFileByPath(path);
+          if (folder instanceof TFolder && folder.children.length === 0) await this.app.vault.delete(folder);
+        },
+      },
+      dismiss: suggested ? () => this.updateSettingsFromView(next => { next.dailyFolderHintDismissed = true; }) : undefined,
+    }).open();
+  }
+
+  /** Event Notes the pattern files in their Daily Note's folder, which a new Daily Note format therefore moves. */
+  private trackedEventNotes(): TrackedEventNote[] {
+    const settings = this.store.state.settings;
+    if (!usesDailyFolder(settings.eventPattern)) return [];
+    return Object.entries(this.store.state.noteLinks).filter(([, link]) => !link.pendingRename).map(([id, link]) => {
+      const event = this.eventById(id);
+      const note: TrackedEventNote = { id, path: link.eventPath, dailyPath: link.dailyPath };
+      if (!event) return note;
+      const name = this.notes.sourceName(event);
+      return { ...note, date: eventCalendarDate(event, settings.timeZone),
+        patternPath: dailyFolder => eventNotePathIn(event, name, settings, dailyFolder) };
+    });
   }
 
   saveSettings(settings: PluginSettings): Promise<void> {
@@ -635,8 +732,9 @@ export default class CalendarNotePlugin extends Plugin {
       return { status: result.status, text: result.text, headers: result.headers };
     });
     if (this.range) await this.subscriptions.setRange(this.range);
-    if (this.ready) this.subscriptions.start();
-    if (this.ready && this.range) await this.subscriptions.refresh(this.range, refresh);
+    // A held plugin catches up when the hold is released.
+    if (this.ready && !this.writeHold.active) this.subscriptions.start();
+    if (this.ready && !this.writeHold.active && this.range) await this.subscriptions.refresh(this.range, refresh);
     this.scheduleScan();
   }
 

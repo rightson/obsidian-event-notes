@@ -62,8 +62,10 @@ export interface PluginSettings extends WeekRules {
   eventPattern: string;
   /** Move an Event Note to its pattern path when the event's date changes. */
   moveEventNotes: boolean;
-  /** Stop suggesting a folder per day when {daily} files Event Notes beside Daily Notes in one shared folder. */
+  /** Stop suggesting the Daily Note folder wizard at startup when {daily} files Event Notes beside Daily Notes in one shared folder. */
   dailyFolderHintDismissed: boolean;
+  /** The Daily Note format the folder wizard last migrated from, kept until every note has moved so a partial run can be finished. */
+  dailyFormerFormat: string;
   eventPropertiesDefault: EventPropertiesDefault;
   eventClickAction: EventClickAction;
   miniDateClickAction: MiniDateClickAction;
