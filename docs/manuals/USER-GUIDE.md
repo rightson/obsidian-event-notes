@@ -6,7 +6,7 @@ Open the calendar from the ribbon icon or the command palette. The toolbar reads
 
 ## Settings
 
-Settings → **Event Notes** opens as a list of sections: **Note paths**, **Calendar display**, **Clicking**, **Month calendar**, **Events sidebar**, **Gantt**, **Subscriptions**, one section per subscribed calendar, and **Event Note diagnostics**. Each section is folded and shows its heading with a one-line summary of what is set now, such as the Event Note pattern, *3 calendars, 1 failed to refresh*, or a calendar's type and how its last refresh went. The summary follows your changes as you make them.
+Settings → **Event Notes** opens as a list of sections: **Event Notes**, **Daily Notes**, **Weekly Notes**, **Calendar display**, **Clicking**, **Month calendar**, **Events sidebar**, **Gantt**, **Subscriptions**, one section per subscribed calendar, and **Event Note diagnostics**. Each section is folded and shows its heading with a one-line summary of what is set now, such as the Event Note pattern, the path of a sample Daily Note and where its settings come from (*Journal/2026-10-23.md · this plugin*), *3 calendars, 1 failed to refresh*, or a calendar's type and how its last refresh went. The summary follows your changes as you make them.
 
 Click a heading to unfold its options, and again to fold them; with the keyboard, move to the heading with Tab and press Enter or Space. A section that needs your attention (a calendar that failed to refresh, or Event Note problems) shows that in red and opens by itself. Picking a setting in Obsidian's settings search unfolds its section for you. The sections you leave open are remembered on this device and are not synced.
 
@@ -125,7 +125,7 @@ The wizard below makes this change for you and moves your existing notes.
 
 ### Change Daily Note folders
 
-The **Change Daily Note folders** wizard changes the Daily Note path rule and moves your existing notes to match. Open it with **Open wizard** next to **Daily Note folders** under **Note paths** in settings, or run the **Change Daily Note folders** command. When the pattern starts with `{daily}` and all Daily Notes share one folder, Event Notes also opens it at startup, until the folders change or you choose **Don't show again**.
+The **Change Daily Note folders** wizard changes the Daily Note path rule and moves your existing notes to match. Open it with **Open wizard** next to **Daily Note folders** under **Event Notes** in settings, or run the **Change Daily Note folders** command. When the pattern starts with `{daily}` and all Daily Notes share one folder, Event Notes also opens it at startup, until the folders change or you choose **Don't show again**.
 
 The wizard works from any Daily Note format to any other. For example, from `YYYY/[Q]Q/MM-DD/MMM DD` to `YYYY/MM/MM-DD/MMMM DD`:
 

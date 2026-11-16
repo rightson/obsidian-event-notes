@@ -4,7 +4,7 @@ import test from 'node:test';
 import { DEFAULT_SETTINGS } from '../src/settings';
 import { emptySourceCache } from '../src/history';
 import {
-  agendaSummary, clickingSummary, diagnosticsSummary, displaySummary, ganttSummary, monthsSummary, notePathsSummary,
+  agendaSummary, clickingSummary, diagnosticsSummary, displaySummary, eventNotesSummary, ganttSummary, monthsSummary, periodicNotesSummary, providerLabel,
   readOpenSections, revealOnLookup, sectionHeading, sourceSectionKey, sourceSummary, startsOpen, subscriptionsSummary, withSectionOpen,
 } from '../src/settings-sections';
 import type { CalendarSource, PluginSettings } from '../src/types';
@@ -22,20 +22,43 @@ test('a section starts open when the user left it open or it needs attention', (
 });
 
 test('remembered open sections survive bad stored data', () => {
-  assert.deepEqual(readOpenSections(['paths', 'source:a']), ['paths', 'source:a']);
-  assert.deepEqual(readOpenSections(['paths', 3, null, 'paths']), ['paths']);
-  for (const bad of [null, undefined, 'paths', { paths: true }, 7]) assert.deepEqual(readOpenSections(bad), []);
+  assert.deepEqual(readOpenSections(['gantt', 'source:a']), ['gantt', 'source:a']);
+  assert.deepEqual(readOpenSections(['gantt', 3, null, 'gantt']), ['gantt']);
+  for (const bad of [null, undefined, 'gantt', { gantt: true }, 7]) assert.deepEqual(readOpenSections(bad), []);
+});
+
+test('the old Note paths section is forgotten when it was left open', () => {
+  assert.deepEqual(readOpenSections(['paths', 'daily-notes', 'source:a']), ['daily-notes', 'source:a']);
+  assert.deepEqual(readOpenSections(['paths']), []);
 });
 
 test('opening and closing a section updates the remembered list and forgets removed calendars', () => {
-  assert.deepEqual(withSectionOpen([], 'paths', true, []), ['paths']);
-  assert.deepEqual(withSectionOpen(['paths'], 'paths', true, []), ['paths']);
-  assert.deepEqual(withSectionOpen(['paths', 'gantt'], 'paths', false, []), ['gantt']);
+  assert.deepEqual(withSectionOpen([], 'gantt', true, []), ['gantt']);
+  assert.deepEqual(withSectionOpen(['gantt'], 'gantt', true, []), ['gantt']);
+  assert.deepEqual(withSectionOpen(['event-notes', 'gantt'], 'event-notes', false, []), ['gantt']);
   assert.deepEqual(withSectionOpen(['source:gone', 'source:a', 'gantt'], sourceSectionKey('b'), true, ['a', 'b']), ['source:a', 'gantt', 'source:b']);
 });
 
-test('Note paths shows the Event Note pattern', () => {
-  assert.deepEqual(notePathsSummary(settings()), { text: 'Event Notes: {daily}/{title}', attention: false });
+test('Event Notes shows the Event Note pattern', () => {
+  assert.deepEqual(eventNotesSummary(settings()), { text: '{daily}/{title}', attention: false });
+  assert.equal(eventNotesSummary(settings({ eventPattern: 'Events/{title}' })).text, 'Events/{title}');
+});
+
+test('a provider is named the same way in its row and in the summary', () => {
+  assert.equal(providerLabel('calendar-note'), 'this plugin');
+  assert.equal(providerLabel('daily-notes'), 'daily-notes');
+  assert.equal(providerLabel('periodic-notes'), 'periodic-notes');
+});
+
+test('Daily Notes and Weekly Notes show the sample path and where it comes from', () => {
+  assert.deepEqual(periodicNotesSummary(() => ({ path: 'Journal/2026-10-23.md', provider: 'daily-notes' })), { text: 'Journal/2026-10-23.md · daily-notes', attention: false });
+  assert.equal(periodicNotesSummary(() => ({ path: 'Weekly/2026-W43.md', provider: 'calendar-note' })).text, 'Weekly/2026-W43.md · this plugin');
+});
+
+test('a path that cannot be worked out shows why, without forcing the section open', () => {
+  const broken = () => { throw new Error('Note paths cannot contain empty or dot segments.'); };
+  assert.deepEqual(periodicNotesSummary(broken), { text: 'Note paths cannot contain empty or dot segments.', attention: false });
+  assert.equal(periodicNotesSummary(() => { throw 'no'; }).text, 'Path unavailable');
 });
 
 test('Calendar display shows the time zone, week start, and snap interval', () => {
