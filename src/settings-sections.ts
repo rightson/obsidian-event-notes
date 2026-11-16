@@ -28,6 +28,26 @@ export function withSectionOpen(open: readonly string[], key: string, isOpen: bo
   return isOpen ? [...kept, key] : kept;
 }
 
+/**
+ * The heading row among a setting group's children. Obsidian puts it first, but only while the
+ * group has a heading; the group's search box always sits right before the rows.
+ */
+export function sectionHeading<T extends { classList: { contains(name: string): boolean } }>(children: ArrayLike<T>): T | null {
+  return Array.from(children).find(child => child.classList.contains('setting-item-heading')) ?? null;
+}
+
+/**
+ * Settings search scrolls to whatever Obsidian's row lookup returns, and a folded row cannot be
+ * scrolled to. So the lookup unfolds the row's section first.
+ */
+export function revealOnLookup<D, E>(lookup: ((definition: D) => E | undefined) | undefined, reveal: (element: E) => void): (definition: D) => E | undefined {
+  return definition => {
+    const element = lookup?.(definition);
+    if (element) reveal(element);
+    return element;
+  };
+}
+
 const calm = (text: string): SectionSummary => ({ text, attention: false });
 const plural = (count: number, one: string, many = `${one}s`): string => `${count} ${count === 1 ? one : many}`;
 const capitalize = (text: string): string => text.charAt(0).toUpperCase() + text.slice(1);

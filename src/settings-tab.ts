@@ -10,7 +10,7 @@ import { PROBLEM_LABELS, PROBLEM_ORDER } from './note-problems';
 import { holidayOptions, isCalendarKind, isHolidayShade, type HolidayOptions } from './holidays';
 import {
   agendaSummary, clickingSummary, diagnosticsSummary, displaySummary, ganttSummary, monthsSummary, notePathsSummary,
-  readOpenSections, sourceSectionKey, sourceSummary, startsOpen, subscriptionsSummary, withSectionOpen, type SectionSummary,
+  readOpenSections, revealOnLookup, sectionHeading, sourceSectionKey, sourceSummary, startsOpen, subscriptionsSummary, withSectionOpen, type SectionSummary,
 } from './settings-sections';
 
 const sample = { id: 'local|sample', sourceId: 'local', uid: 'sample', title: 'Sample event', start: '2026-10-23T09:00:00+08:00', end: '2026-10-23T10:00:00+08:00', allDay: false };
@@ -199,6 +199,16 @@ export class CalendarNoteSettingTab extends PluginSettingTab {
     this.open.clear();
   }
 
+  /**
+   * Obsidian's settings search calls this to find the row it scrolls to and highlights. It is not
+   * in the public typings, so without it search still opens the tab but leaves the section folded.
+   */
+  getElementForDefinition(definition: SettingDefinitionItem): HTMLElement | undefined {
+    type Lookup = (definition: SettingDefinitionItem) => HTMLElement | undefined;
+    const lookup = (PluginSettingTab.prototype as unknown as { getElementForDefinition?: Lookup }).getElementForDefinition;
+    return revealOnLookup(lookup && ((item: SettingDefinitionItem) => lookup.call(this, item)), element => { this.revealSection(element); })(definition);
+  }
+
   refreshSubscriptionStatus(): void {
     for (const [id, element] of this.statusElements) this.showStatus(id, element);
     this.syncSections();
@@ -249,8 +259,9 @@ export class CalendarNoteSettingTab extends PluginSettingTab {
     header.querySelectorAll(':scope > .cn-section-chevron, :scope > .cn-section-summary').forEach(element => { element.remove(); });
   }
 
+  /** Null while the group has no heading: Obsidian takes the heading row out of the page then. */
   private sectionHeader(listEl: HTMLElement): HTMLElement | null {
-    const header = listEl.previousElementSibling;
+    const header = sectionHeading(listEl.parentElement?.children ?? []);
     return header instanceof HTMLElement ? header : null;
   }
 
@@ -265,6 +276,15 @@ export class CalendarNoteSettingTab extends PluginSettingTab {
     this.open.set(section.key, open);
     const sourceIds = this.plugin.store.state.settings.sources.map(source => source.id);
     this.app.saveLocalStorage(OPEN_SECTIONS_KEY, withSectionOpen(this.rememberedSections(), section.key, open, sourceIds));
+    this.syncSection(groupEl);
+  }
+
+  /** Opens the section for this showing only: the user did not choose to keep it open. */
+  private revealSection(element: HTMLElement): void {
+    const groupEl = element.closest<HTMLElement>('.setting-group');
+    const section = groupEl && this.sections.get(groupEl);
+    if (!groupEl || !section || this.open.get(section.key)) return;
+    this.open.set(section.key, true);
     this.syncSection(groupEl);
   }
 
@@ -295,9 +315,9 @@ export class CalendarNoteSettingTab extends PluginSettingTab {
     }
     let summary = header.querySelector<HTMLElement>(':scope > .cn-section-summary');
     if (!summary) {
-      summary = header.createSpan({ cls: 'cn-section-summary' });
-      const title = Array.from(header.children).find(child => !child.matches('.cn-section-chevron, .cn-section-summary, .setting-item-control'));
-      (title ?? chevron).after(summary);
+      summary = createSpan({ cls: 'cn-section-summary' });
+      // Between the heading text and the heading's own buttons, so it reads as part of the heading.
+      header.insertBefore(summary, header.querySelector(':scope > .setting-item-control'));
     }
     summary.setText(text);
     summary.toggleClass('is-attention', attention);

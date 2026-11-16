@@ -8,7 +8,7 @@ Open the calendar from the ribbon icon or the command palette. The toolbar reads
 
 Settings → **Event Notes** opens as a list of sections: **Note paths**, **Calendar display**, **Clicking**, **Month calendar**, **Events sidebar**, **Gantt**, **Subscriptions**, one section per subscribed calendar, and **Event Note diagnostics**. Each section is folded and shows its heading with a one-line summary of what is set now, such as the Event Note pattern, *3 calendars, 1 failed to refresh*, or a calendar's type and how its last refresh went. The summary follows your changes as you make them.
 
-Click a heading to unfold its options, and again to fold them; with the keyboard, move to the heading with Tab and press Enter or Space. A section that needs your attention (a calendar that failed to refresh, or Event Note problems) shows that in red and opens by itself. The sections you leave open are remembered on this device and are not synced.
+Click a heading to unfold its options, and again to fold them; with the keyboard, move to the heading with Tab and press Enter or Space. A section that needs your attention (a calendar that failed to refresh, or Event Note problems) shows that in red and opens by itself. Picking a setting in Obsidian's settings search unfolds its section for you. The sections you leave open are remembered on this device and are not synced.
 
 ## Event details
 

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { DEFAULT_SETTINGS } from '../src/settings';
 import { emptySourceCache } from '../src/history';
 import {
   agendaSummary, clickingSummary, diagnosticsSummary, displaySummary, ganttSummary, monthsSummary, notePathsSummary,
-  readOpenSections, sourceSectionKey, sourceSummary, startsOpen, subscriptionsSummary, withSectionOpen,
+  readOpenSections, revealOnLookup, sectionHeading, sourceSectionKey, sourceSummary, startsOpen, subscriptionsSummary, withSectionOpen,
 } from '../src/settings-sections';
 import type { CalendarSource, PluginSettings } from '../src/types';
 
@@ -91,4 +92,40 @@ test('Event Note diagnostics counts problems', () => {
   assert.deepEqual(diagnosticsSummary(0), { text: 'No problems', attention: false });
   assert.deepEqual(diagnosticsSummary(1), { text: '1 problem found', attention: true });
   assert.deepEqual(diagnosticsSummary(4), { text: '4 problems found', attention: true });
+});
+
+// The children Obsidian gives a setting group: the heading row only while there is a heading, then its search box, then the rows.
+const child = (...classes: string[]) => ({ classList: { contains: (name: string) => classes.includes(name) } });
+
+test('the toggle goes on the group heading, not on the search box before the rows', () => {
+  const heading = child('setting-item', 'setting-item-heading');
+  const search = child('setting-group-search');
+  const rows = child('setting-items');
+  assert.equal(sectionHeading([heading, search, rows]), heading);
+});
+
+test('a group without a heading has nothing to fold under', () => {
+  assert.equal(sectionHeading([child('setting-group-search'), child('setting-items')]), null);
+  assert.equal(sectionHeading([]), null);
+});
+
+test('a summary that is cut short when folded wraps once its section is open, and always on a phone', () => {
+  const css = readFileSync(new URL('../styles.css', import.meta.url), 'utf8');
+  const wrap = css.split('\n').find(line => line.includes('.cn-section-summary') && /white-space:\s*normal/.test(line)) ?? '';
+  assert.match(wrap, /\.cn-section-header\[aria-expanded="true"\] \.cn-section-summary/);
+  assert.match(wrap, /\.is-phone \.cn-section-summary/);
+});
+
+test('a row that settings search asks for is unfolded before it is handed back', () => {
+  const seen: string[] = [];
+  const find = revealOnLookup((name: string) => (name === 'Snap interval' ? 'row' : undefined), row => { seen.push(row); });
+  assert.equal(find('Snap interval'), 'row');
+  assert.deepEqual(seen, ['row']);
+  assert.equal(find('Unknown'), undefined);
+  assert.deepEqual(seen, ['row']);
+});
+
+test('without Obsidian\'s row lookup nothing is found and nothing is unfolded', () => {
+  const find = revealOnLookup<string, string>(undefined, () => { assert.fail('nothing to reveal'); });
+  assert.equal(find('Snap interval'), undefined);
 });
